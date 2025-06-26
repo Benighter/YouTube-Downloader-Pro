@@ -7,8 +7,15 @@ class YouTubeDownloader {
         this.isDownloading = false;
         this.selectedFolder = '';
 
+        // Folder browser properties
+        this.currentPath = '';
+        this.selectedFolderForModal = '';
+        this.folderHistory = [];
+
         this.initializeElements();
         this.bindEvents();
+        this.loadSavedFolder();
+        this.setDefaultFolder();
     }
 
     initializeElements() {
@@ -42,6 +49,23 @@ class YouTubeDownloader {
             folderPathInput: document.querySelector('.folder-path-input'),
             customPath: document.getElementById('customPath'),
             useCustomPath: document.getElementById('useCustomPath'),
+            browseFolderBtn: document.getElementById('browseFolderBtn'),
+
+            // Folder modal elements
+            folderModal: document.getElementById('folderModal'),
+            closeFolderModal: document.getElementById('closeFolderModal'),
+            folderBreadcrumb: document.getElementById('folderBreadcrumb'),
+            folderQuickAccess: document.getElementById('folderQuickAccess'),
+            currentFolderPath: document.getElementById('currentFolderPath'),
+            folderList: document.getElementById('folderList'),
+            showNewFolderBtn: document.getElementById('showNewFolderBtn'),
+            newFolderInput: document.getElementById('newFolderInput'),
+            newFolderName: document.getElementById('newFolderName'),
+            createFolderBtn: document.getElementById('createFolderBtn'),
+            cancelNewFolderBtn: document.getElementById('cancelNewFolderBtn'),
+            selectedFolderPath: document.getElementById('selectedFolderPath'),
+            cancelFolderSelection: document.getElementById('cancelFolderSelection'),
+            confirmFolderSelection: document.getElementById('confirmFolderSelection'),
             
             // Progress elements
             progressFill: document.getElementById('progressFill'),
@@ -77,11 +101,34 @@ class YouTubeDownloader {
         // Folder selection
         this.elements.resetFolderBtn.addEventListener('click', () => this.resetFolder());
         this.elements.useCustomPath.addEventListener('click', () => this.useCustomPath());
+        this.elements.browseFolderBtn.addEventListener('click', () => this.openFolderBrowser());
 
         // Enter key support for custom path
         this.elements.customPath.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 this.useCustomPath();
+            }
+        });
+
+        // Folder modal events
+        this.elements.closeFolderModal.addEventListener('click', () => this.closeFolderBrowser());
+        this.elements.cancelFolderSelection.addEventListener('click', () => this.closeFolderBrowser());
+        this.elements.confirmFolderSelection.addEventListener('click', () => this.confirmFolderSelection());
+        this.elements.showNewFolderBtn.addEventListener('click', () => this.showNewFolderInput());
+        this.elements.createFolderBtn.addEventListener('click', () => this.createNewFolder());
+        this.elements.cancelNewFolderBtn.addEventListener('click', () => this.hideNewFolderInput());
+
+        // Enter key support for new folder name
+        this.elements.newFolderName.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.createNewFolder();
+            }
+        });
+
+        // Close modal when clicking outside
+        this.elements.folderModal.addEventListener('click', (e) => {
+            if (e.target === this.elements.folderModal) {
+                this.closeFolderBrowser();
             }
         });
 
@@ -247,14 +294,12 @@ class YouTubeDownloader {
     }
 
     resetFolder() {
-        this.selectedFolder = '';
-        this.selectedFolderPath = '';
-        this.elements.selectedFolderDisplay.textContent = 'Default: yt-dlp folder';
-        this.updateFolderDisplay(false);
+        // Reset to default Downloads/YT-dlp folder
+        this.setDefaultFolder();
         this.elements.customPath.value = '';
         this.elements.folderPathInput.style.display = 'none';
-        this.elements.togglePathInput.style.display = 'block';
-        this.elements.togglePathInput.textContent = '⌨️ Enter path manually';
+        // Remove saved preference
+        localStorage.removeItem('ytdl_selected_folder');
     }
 
     updateFolderDisplay(isSelected) {
@@ -312,6 +357,13 @@ class YouTubeDownloader {
 
     async startDownload() {
         if (this.isDownloading) return;
+
+        // Check if folder is selected
+        if (!this.selectedFolder || this.selectedFolder.trim() === '') {
+            this.showError('Please select a download folder first!');
+            this.openFolderBrowser();
+            return;
+        }
 
         this.isDownloading = true;
         this.hideAllSections();
@@ -511,6 +563,366 @@ class YouTubeDownloader {
 
     showLoading(show) {
         this.elements.loadingOverlay.style.display = show ? 'flex' : 'none';
+    }
+
+    // Folder Browser Methods
+    async setDefaultFolder() {
+        // Only set default if no folder is already selected
+        if (!this.selectedFolder) {
+            // Get the default Downloads/YT-dlp folder from server
+            try {
+                const response = await fetch('/api/default-folder', {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    this.selectedFolder = data.folder;
+                    this.elements.selectedFolderDisplay.textContent = `Default: Downloads/YT-dlp`;
+                    this.updateFolderDisplay(true);
+                    console.log('Set default folder:', data.folder);
+                } else {
+                    // Fallback to generic default
+                    this.selectedFolder = 'Downloads/YT-dlp';
+                    this.elements.selectedFolderDisplay.textContent = `Default: Downloads/YT-dlp`;
+                    this.updateFolderDisplay(true);
+                }
+            } catch (error) {
+                console.error('Error getting default folder:', error);
+                // Fallback to generic default
+                this.selectedFolder = 'Downloads/YT-dlp';
+                this.elements.selectedFolderDisplay.textContent = `Default: Downloads/YT-dlp`;
+                this.updateFolderDisplay(true);
+            }
+        }
+    }
+
+    loadSavedFolder() {
+        const savedFolder = localStorage.getItem('ytdl_selected_folder');
+        if (savedFolder) {
+            console.log('Loading saved folder:', savedFolder);
+            this.selectedFolder = savedFolder;
+            this.elements.selectedFolderDisplay.textContent = `Saved: ${savedFolder}`;
+            this.updateFolderDisplay(true);
+        }
+    }
+
+    getHomeDirectory() {
+        // In browser environment, we'll use a generic path that the server will resolve
+        if (this.isWindows()) {
+            return 'C:\\Users\\' + (window.navigator.userAgent.includes('Windows') ? 'User' : 'User');
+        } else {
+            return '/home/user';
+        }
+    }
+
+    isWindows() {
+        return window.navigator.userAgent.includes('Windows');
+    }
+
+    saveFolderPreference(folderPath) {
+        localStorage.setItem('ytdl_selected_folder', folderPath);
+    }
+
+    async openFolderBrowser() {
+        console.log('Opening folder browser...');
+        this.elements.folderModal.style.display = 'block';
+        this.selectedFolderForModal = '';
+        this.elements.confirmFolderSelection.disabled = true;
+        this.elements.selectedFolderPath.textContent = 'No folder selected';
+
+        // Start from saved folder or home directory
+        const startPath = this.selectedFolder || '';
+        console.log('Starting path:', startPath);
+        await this.loadFolderContents(startPath);
+    }
+
+    closeFolderBrowser() {
+        this.elements.folderModal.style.display = 'none';
+        this.hideNewFolderInput();
+    }
+
+    async loadFolderContents(path = '') {
+        try {
+            this.elements.folderList.innerHTML = `
+                <div class="folder-loading">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <span>Loading folders...</span>
+                </div>
+            `;
+
+            const response = await fetch('/api/folders', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ path: path })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                this.currentPath = data.current_path;
+                this.renderFolderContents(data);
+            } else {
+                this.showFolderError(data.error || 'Failed to load folders');
+            }
+        } catch (error) {
+            console.error('Error loading folders:', error);
+            this.showFolderError('Failed to load folders');
+        }
+    }
+
+    renderFolderContents(data) {
+        // Update current path display
+        this.elements.currentFolderPath.textContent = data.current_path;
+
+        // Update breadcrumb
+        this.renderBreadcrumb(data.current_path);
+
+        // Update quick access buttons
+        this.renderQuickAccess(data.common_folders);
+
+        // Render folder list
+        let folderListHTML = '';
+
+        // Add parent folder if available
+        if (data.parent_path) {
+            folderListHTML += `
+                <div class="folder-item parent-folder" data-path="${data.parent_path}">
+                    <i class="fas fa-level-up-alt"></i>
+                    <span class="folder-name">.. (Go up)</span>
+                </div>
+            `;
+        }
+
+        // Add folders
+        data.folders.forEach(folder => {
+            folderListHTML += `
+                <div class="folder-item" data-path="${folder.path}">
+                    <i class="fas fa-folder"></i>
+                    <span class="folder-name">${folder.name}</span>
+                </div>
+            `;
+        });
+
+        if (data.folders.length === 0 && !data.parent_path) {
+            folderListHTML = `
+                <div class="folder-loading">
+                    <i class="fas fa-folder-open"></i>
+                    <span>No folders found</span>
+                </div>
+            `;
+        }
+
+        this.elements.folderList.innerHTML = folderListHTML;
+
+        // Add click handlers to folder items
+        this.elements.folderList.querySelectorAll('.folder-item').forEach(item => {
+            item.addEventListener('click', () => this.handleFolderClick(item));
+            item.addEventListener('dblclick', () => this.handleFolderDoubleClick(item));
+        });
+    }
+
+    renderBreadcrumb(currentPath) {
+        const pathParts = currentPath.split(/[/\\]/).filter(part => part);
+        let breadcrumbHTML = '';
+        let buildPath = '';
+
+        // Add root/drive
+        const isWindows = currentPath.includes('\\') || currentPath.match(/^[A-Z]:/);
+        if (isWindows) {
+            const drive = currentPath.split('\\')[0];
+            breadcrumbHTML += `<span class="breadcrumb-item" data-path="${drive}\\">${drive}</span>`;
+            buildPath = drive + '\\';
+        } else {
+            breadcrumbHTML += `<span class="breadcrumb-item" data-path="/">/</span>`;
+            buildPath = '/';
+        }
+
+        // Add path parts
+        pathParts.forEach((part, index) => {
+            if (part && part !== pathParts[0]) {
+                buildPath += (isWindows ? '\\' : '/') + part;
+                breadcrumbHTML += `<span class="breadcrumb-separator">/</span>`;
+                breadcrumbHTML += `<span class="breadcrumb-item" data-path="${buildPath}">${part}</span>`;
+            }
+        });
+
+        this.elements.folderBreadcrumb.innerHTML = breadcrumbHTML;
+
+        // Add click handlers to breadcrumb items
+        this.elements.folderBreadcrumb.querySelectorAll('.breadcrumb-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const path = item.getAttribute('data-path');
+                this.loadFolderContents(path);
+            });
+        });
+    }
+
+    renderQuickAccess(commonFolders) {
+        let quickAccessHTML = '';
+
+        commonFolders.forEach(folder => {
+            quickAccessHTML += `
+                <button class="folder-quick-btn" data-path="${folder.path}">
+                    <i class="fas fa-folder"></i>
+                    ${folder.name}
+                </button>
+            `;
+        });
+
+        this.elements.folderQuickAccess.innerHTML = quickAccessHTML;
+
+        // Add click handlers
+        this.elements.folderQuickAccess.querySelectorAll('.folder-quick-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const path = btn.getAttribute('data-path');
+                this.loadFolderContents(path);
+            });
+        });
+    }
+
+    handleFolderClick(folderItem) {
+        // Remove previous selection
+        this.elements.folderList.querySelectorAll('.folder-item').forEach(item => {
+            item.classList.remove('selected');
+        });
+
+        // Select current folder
+        folderItem.classList.add('selected');
+        const folderPath = folderItem.getAttribute('data-path');
+
+        // Don't select parent folder for confirmation
+        if (!folderItem.classList.contains('parent-folder')) {
+            this.selectedFolderForModal = folderPath;
+            this.elements.selectedFolderPath.textContent = folderPath;
+            this.elements.confirmFolderSelection.disabled = false;
+        } else {
+            this.selectedFolderForModal = '';
+            this.elements.selectedFolderPath.textContent = 'No folder selected';
+            this.elements.confirmFolderSelection.disabled = true;
+        }
+    }
+
+    handleFolderDoubleClick(folderItem) {
+        const folderPath = folderItem.getAttribute('data-path');
+        this.loadFolderContents(folderPath);
+    }
+
+    confirmFolderSelection() {
+        if (this.selectedFolderForModal) {
+            this.selectedFolder = this.selectedFolderForModal;
+            this.elements.selectedFolderDisplay.textContent = `Selected: ${this.selectedFolderForModal}`;
+            this.updateFolderDisplay(true);
+            this.saveFolderPreference(this.selectedFolderForModal);
+            this.showFolderSelectionSuccess(this.selectedFolderForModal);
+            this.closeFolderBrowser();
+        }
+    }
+
+    showNewFolderInput() {
+        this.elements.newFolderInput.style.display = 'flex';
+        this.elements.showNewFolderBtn.style.display = 'none';
+        this.elements.newFolderName.focus();
+    }
+
+    hideNewFolderInput() {
+        this.elements.newFolderInput.style.display = 'none';
+        this.elements.showNewFolderBtn.style.display = 'block';
+        this.elements.newFolderName.value = '';
+    }
+
+    async createNewFolder() {
+        const folderName = this.elements.newFolderName.value.trim();
+
+        if (!folderName) {
+            alert('Please enter a folder name');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/create-folder', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    parent_path: this.currentPath,
+                    folder_name: folderName
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                this.hideNewFolderInput();
+                // Reload current directory to show new folder
+                await this.loadFolderContents(this.currentPath);
+                // Show success message
+                this.showTemporaryMessage(`Folder "${folderName}" created successfully!`, 'success');
+            } else {
+                alert(data.error || 'Failed to create folder');
+            }
+        } catch (error) {
+            console.error('Error creating folder:', error);
+            alert('Failed to create folder');
+        }
+    }
+
+    showFolderError(message) {
+        this.elements.folderList.innerHTML = `
+            <div class="folder-loading">
+                <i class="fas fa-exclamation-triangle" style="color: #ff4757;"></i>
+                <span style="color: #ff4757;">${message}</span>
+            </div>
+        `;
+    }
+
+    showTemporaryMessage(message, type = 'info') {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `temp-message temp-message-${type}`;
+        messageDiv.innerHTML = `
+            <i class="fas fa-${type === 'success' ? 'check-circle' : 'info-circle'}"></i>
+            <span>${message}</span>
+        `;
+
+        const colors = {
+            success: '#2ed573',
+            error: '#ff4757',
+            info: '#667eea'
+        };
+
+        messageDiv.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: ${colors[type] || colors.info};
+            color: white;
+            padding: 15px 20px;
+            border-radius: 10px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            z-index: 1001;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            animation: slideInRight 0.5s ease;
+        `;
+
+        document.body.appendChild(messageDiv);
+
+        setTimeout(() => {
+            messageDiv.style.animation = 'slideOutRight 0.5s ease forwards';
+            setTimeout(() => {
+                if (messageDiv.parentNode) {
+                    messageDiv.parentNode.removeChild(messageDiv);
+                }
+            }, 500);
+        }, 3000);
     }
 }
 

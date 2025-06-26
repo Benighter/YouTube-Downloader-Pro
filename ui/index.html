@@ -65,12 +65,21 @@
                     <div class="folder-input-group">
                         <div class="folder-display">
                             <i class="fas fa-folder-open"></i>
-                            <span id="selectedFolder">Default: yt-dlp folder</span>
+                            <span id="selectedFolder">Default: Downloads/YT-dlp</span>
                         </div>
                         <button class="folder-btn secondary" id="resetFolderBtn" style="display: none;">
                             <i class="fas fa-undo"></i>
                             Reset to Default
                         </button>
+                    </div>
+
+                    <!-- Folder Browser Button -->
+                    <div class="folder-browser-section">
+                        <button class="folder-browse-btn" id="browseFolderBtn">
+                            <i class="fas fa-folder-open"></i>
+                            Browse Folders
+                        </button>
+                        <span class="folder-browse-help">Click to visually select a download folder</span>
                     </div>
 
                     <!-- Path Input Section -->
@@ -226,6 +235,82 @@
         <div class="loading-spinner">
             <i class="fas fa-spinner fa-spin"></i>
             <p>Analyzing video...</p>
+        </div>
+    </div>
+
+    <!-- Folder Browser Modal -->
+    <div class="folder-modal" id="folderModal">
+        <div class="folder-modal-content">
+            <div class="folder-modal-header">
+                <h3><i class="fas fa-folder-open"></i> Select Download Folder</h3>
+                <button class="folder-modal-close" id="closeFolderModal">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <div class="folder-modal-body">
+                <!-- Breadcrumb Navigation -->
+                <div class="folder-breadcrumb" id="folderBreadcrumb">
+                    <span class="breadcrumb-item">Loading...</span>
+                </div>
+
+                <!-- Quick Access Buttons -->
+                <div class="folder-quick-access" id="folderQuickAccess">
+                    <!-- Quick access buttons will be populated by JavaScript -->
+                </div>
+
+                <!-- Current Path Display -->
+                <div class="folder-current-path">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <span id="currentFolderPath">Loading...</span>
+                </div>
+
+                <!-- Folder List -->
+                <div class="folder-list-container">
+                    <div class="folder-list" id="folderList">
+                        <div class="folder-loading">
+                            <i class="fas fa-spinner fa-spin"></i>
+                            <span>Loading folders...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- New Folder Section -->
+                <div class="folder-new-section">
+                    <div class="folder-new-input" id="newFolderInput" style="display: none;">
+                        <input type="text" id="newFolderName" placeholder="Enter folder name">
+                        <button class="folder-new-create" id="createFolderBtn">
+                            <i class="fas fa-plus"></i>
+                            Create
+                        </button>
+                        <button class="folder-new-cancel" id="cancelNewFolderBtn">
+                            <i class="fas fa-times"></i>
+                            Cancel
+                        </button>
+                    </div>
+                    <button class="folder-new-btn" id="showNewFolderBtn">
+                        <i class="fas fa-folder-plus"></i>
+                        New Folder
+                    </button>
+                </div>
+            </div>
+
+            <div class="folder-modal-footer">
+                <div class="folder-selected-display">
+                    <i class="fas fa-folder"></i>
+                    <span id="selectedFolderPath">No folder selected</span>
+                </div>
+                <div class="folder-modal-actions">
+                    <button class="folder-btn secondary" id="cancelFolderSelection">
+                        <i class="fas fa-times"></i>
+                        Cancel
+                    </button>
+                    <button class="folder-btn primary" id="confirmFolderSelection" disabled>
+                        <i class="fas fa-check"></i>
+                        Select Folder
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 

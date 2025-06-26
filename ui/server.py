@@ -159,9 +159,10 @@ def start_download():
                 download_dir = os.path.join('..', folder)
                 output_template = os.path.join(download_dir, '%(title)s.%(ext)s')
         else:
-            # Use default directory (parent directory)
-            download_dir = '..'
-            output_template = os.path.join('..', '%(title)s.%(ext)s')
+            # Use default Downloads/YT-dlp directory
+            home_dir = os.path.expanduser('~')
+            download_dir = os.path.join(home_dir, 'Downloads', 'YT-dlp')
+            output_template = os.path.join(download_dir, '%(title)s.%(ext)s')
 
         # Ensure download directory exists
         try:
@@ -239,6 +240,16 @@ def get_progress(download_id):
     })
     return jsonify(progress)
 
+@app.route('/api/default-folder', methods=['GET'])
+def get_default_folder():
+    """Get the default download folder path"""
+    try:
+        home_dir = os.path.expanduser('~')
+        default_folder = os.path.join(home_dir, 'Downloads', 'YT-dlp')
+        return jsonify({'success': True, 'folder': default_folder})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/open-folder', methods=['POST'])
 def open_folder():
     """Open the download folder in file explorer"""
@@ -253,7 +264,9 @@ def open_folder():
             else:
                 folder_path = os.path.join('..', folder)
         else:
-            folder_path = '..'
+            # Use default Downloads/YT-dlp directory
+            home_dir = os.path.expanduser('~')
+            folder_path = os.path.join(home_dir, 'Downloads', 'YT-dlp')
 
         # Convert to absolute path
         folder_path = os.path.abspath(folder_path)
@@ -309,6 +322,121 @@ def get_formats():
         formats = parse_formats_output(result.stdout)
 
         return jsonify({'success': True, 'formats': formats})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/folders', methods=['POST'])
+def list_folders():
+    """List folders in a directory for folder browser"""
+    try:
+        data = request.get_json()
+        path = data.get('path', '').strip()
+
+        # If no path provided, start from user's home directory
+        if not path:
+            path = os.path.expanduser('~')
+
+        # Convert to absolute path and normalize
+        path = os.path.abspath(path)
+
+        # Security check - ensure path exists and is a directory
+        if not os.path.exists(path) or not os.path.isdir(path):
+            return jsonify({'error': 'Directory does not exist'}), 400
+
+        folders = []
+        files = []
+
+        try:
+            # Get directory contents
+            for item in os.listdir(path):
+                item_path = os.path.join(path, item)
+
+                # Skip hidden files/folders on Windows and Unix
+                if item.startswith('.'):
+                    continue
+
+                if os.path.isdir(item_path):
+                    folders.append({
+                        'name': item,
+                        'path': item_path,
+                        'type': 'folder'
+                    })
+                else:
+                    files.append({
+                        'name': item,
+                        'path': item_path,
+                        'type': 'file'
+                    })
+
+        except PermissionError:
+            return jsonify({'error': 'Permission denied to access this directory'}), 403
+
+        # Sort folders and files alphabetically
+        folders.sort(key=lambda x: x['name'].lower())
+        files.sort(key=lambda x: x['name'].lower())
+
+        # Get parent directory
+        parent_path = os.path.dirname(path) if path != os.path.dirname(path) else None
+
+        # Get common folders for quick access
+        common_folders = []
+        try:
+            home_dir = os.path.expanduser('~')
+            common_folders = [
+                {'name': 'Home', 'path': home_dir},
+                {'name': 'Desktop', 'path': os.path.join(home_dir, 'Desktop')},
+                {'name': 'Downloads', 'path': os.path.join(home_dir, 'Downloads')},
+                {'name': 'Documents', 'path': os.path.join(home_dir, 'Documents')},
+                {'name': 'Videos', 'path': os.path.join(home_dir, 'Videos')},
+            ]
+            # Filter out folders that don't exist
+            common_folders = [f for f in common_folders if os.path.exists(f['path'])]
+        except:
+            pass
+
+        return jsonify({
+            'success': True,
+            'current_path': path,
+            'parent_path': parent_path,
+            'folders': folders,
+            'files': files[:10],  # Limit files shown for performance
+            'common_folders': common_folders
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/create-folder', methods=['POST'])
+def create_folder():
+    """Create a new folder"""
+    try:
+        data = request.get_json()
+        parent_path = data.get('parent_path', '').strip()
+        folder_name = data.get('folder_name', '').strip()
+
+        if not parent_path or not folder_name:
+            return jsonify({'error': 'Parent path and folder name are required'}), 400
+
+        # Validate folder name
+        if not folder_name or '/' in folder_name or '\\' in folder_name or folder_name in ['.', '..']:
+            return jsonify({'error': 'Invalid folder name'}), 400
+
+        # Create the full path
+        new_folder_path = os.path.join(parent_path, folder_name)
+
+        # Check if folder already exists
+        if os.path.exists(new_folder_path):
+            return jsonify({'error': 'Folder already exists'}), 400
+
+        # Create the folder
+        os.makedirs(new_folder_path, exist_ok=True)
+
+        return jsonify({
+            'success': True,
+            'message': f'Folder "{folder_name}" created successfully',
+            'folder_path': new_folder_path
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
