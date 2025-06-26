@@ -40,31 +40,160 @@ def format_file_size(size_bytes):
     return f"{size_bytes:.1f} PB"
 
 def calculate_estimated_size(video_info, format_selector='best'):
-    """Calculate estimated file size based on available formats"""
+    """Calculate estimated file size based on available formats with enhanced accuracy"""
     formats = video_info.get('formats', [])
     if not formats:
         return 0
 
     # Try to find the best matching format
     best_format = None
+    fallback_formats = []
 
-    # Simple format selection logic
+    # Enhanced format selection logic
     if format_selector == 'best':
-        best_format = max(formats, key=lambda f: f.get('filesize', 0) or f.get('filesize_approx', 0) or 0)
+        # Sort by filesize first, then by quality indicators
+        formats_with_size = [f for f in formats if f.get('filesize') or f.get('filesize_approx')]
+        if formats_with_size:
+            best_format = max(formats_with_size, key=lambda f: f.get('filesize', 0) or f.get('filesize_approx', 0))
+        else:
+            # Fallback to quality-based selection
+            best_format = max(formats, key=lambda f: (f.get('height', 0) * f.get('width', 0)) or f.get('tbr', 0) or 0)
+
     elif 'height' in format_selector:
         # Extract height from format selector like 'best[height<=720]'
         try:
             height_limit = int(format_selector.split('height<=')[1].split(']')[0])
-            suitable_formats = [f for f in formats if f.get('height', 0) <= height_limit]
+            suitable_formats = [f for f in formats if f.get('height', 0) <= height_limit and f.get('height', 0) > 0]
+
             if suitable_formats:
-                best_format = max(suitable_formats, key=lambda f: f.get('height', 0))
+                # Prefer formats with known file sizes
+                formats_with_size = [f for f in suitable_formats if f.get('filesize') or f.get('filesize_approx')]
+                if formats_with_size:
+                    best_format = max(formats_with_size, key=lambda f: f.get('height', 0))
+                else:
+                    best_format = max(suitable_formats, key=lambda f: f.get('height', 0))
+
+                # Keep other suitable formats as fallbacks
+                fallback_formats = [f for f in suitable_formats if f != best_format]
         except:
             best_format = formats[0] if formats else None
     else:
         best_format = formats[0] if formats else None
 
+    # Try to get size from best format
     if best_format:
-        return best_format.get('filesize') or best_format.get('filesize_approx') or 0
+        size = best_format.get('filesize') or best_format.get('filesize_approx')
+        if size and size > 0:
+            return size
+
+        # If no direct size, try to estimate from bitrate and duration
+        if best_format.get('tbr') and video_info.get('duration'):
+            # Estimate: (bitrate in kbps * duration in seconds * 1024) / 8
+            estimated_size = int((best_format.get('tbr', 0) * video_info.get('duration', 0) * 1024) / 8)
+            if estimated_size > 0:
+                return estimated_size
+
+    # Try fallback formats
+    for fmt in fallback_formats:
+        size = fmt.get('filesize') or fmt.get('filesize_approx')
+        if size and size > 0:
+            return size
+
+    # Last resort: estimate based on video properties
+    duration = video_info.get('duration', 0)
+    if duration > 0:
+        # Rough estimation based on typical bitrates for different qualities
+        height = best_format.get('height', 480) if best_format else 480
+        if height >= 1080:
+            estimated_bitrate = 5000  # 5 Mbps for 1080p
+        elif height >= 720:
+            estimated_bitrate = 2500   # 2.5 Mbps for 720p
+        elif height >= 480:
+            estimated_bitrate = 1200   # 1.2 Mbps for 480p
+        else:
+            estimated_bitrate = 800    # 800 kbps for lower quality
+
+        # Convert to bytes: (bitrate in kbps * duration in seconds * 1024) / 8
+        return int((estimated_bitrate * duration * 1024) / 8)
+
+    return 0
+
+def get_accurate_video_size(url, format_selector='best[height<=720]'):
+    """Get more accurate video size by fetching detailed format information"""
+    try:
+        # Use yt-dlp to get detailed format information with file sizes
+        cmd = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--list-formats',
+            '--no-download',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+
+        if result.returncode == 0 and result.stdout:
+            # Parse the format list output to extract file sizes
+            lines = result.stdout.split('\n')
+            for line in lines:
+                if 'MiB' in line or 'GiB' in line or 'KiB' in line:
+                    # Extract size information from format list
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if 'MiB' in part or 'GiB' in part or 'KiB' in part:
+                            try:
+                                size_str = part.replace('~', '').strip()
+                                if 'GiB' in size_str:
+                                    size_val = float(size_str.replace('GiB', ''))
+                                    return int(size_val * 1024 * 1024 * 1024)  # Convert to bytes
+                                elif 'MiB' in size_str:
+                                    size_val = float(size_str.replace('MiB', ''))
+                                    return int(size_val * 1024 * 1024)  # Convert to bytes
+                                elif 'KiB' in size_str:
+                                    size_val = float(size_str.replace('KiB', ''))
+                                    return int(size_val * 1024)  # Convert to bytes
+                            except (ValueError, IndexError):
+                                continue
+
+        # If format listing doesn't work, try getting JSON with specific format
+        cmd_json = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--dump-json',
+            '--no-download',
+            '--format', format_selector,
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            url
+        ]
+
+        result_json = subprocess.run(cmd_json, capture_output=True, text=True, cwd='..')
+
+        if result_json.returncode == 0:
+            try:
+                video_info = json.loads(result_json.stdout)
+                size = video_info.get('filesize') or video_info.get('filesize_approx')
+                if size and size > 0:
+                    return size
+
+                # Try to estimate from HTTP headers if available
+                if video_info.get('url'):
+                    try:
+                        import urllib.request
+                        req = urllib.request.Request(video_info['url'])
+                        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                        with urllib.request.urlopen(req) as response:
+                            content_length = response.headers.get('Content-Length')
+                            if content_length:
+                                return int(content_length)
+                    except:
+                        pass
+
+            except json.JSONDecodeError:
+                pass
+
+    except Exception as e:
+        print(f"Error getting accurate video size: {e}")
 
     return 0
 
@@ -134,10 +263,13 @@ class DownloadProgress:
         self.size = "0 MB"
         self.eta = "00:00"
         self.filename = ""
+        self.last_update = 0
+        self.download_rate_history = []
 
 def progress_hook(d):
-    """Progress hook for yt-dlp"""
+    """Enhanced progress hook for yt-dlp with more frequent updates"""
     download_id = d.get('info_dict', {}).get('id', 'unknown')
+    current_time = time.time()
 
     if download_id not in download_progress:
         download_progress[download_id] = DownloadProgress()
@@ -147,38 +279,79 @@ def progress_hook(d):
     if d['status'] == 'downloading':
         progress.status = "downloading"
         progress.filename = d.get('filename', '')
+        progress.last_update = current_time
 
-        # Calculate progress percentage
-        if 'total_bytes' in d:
-            progress.progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
-        elif 'total_bytes_estimate' in d:
-            progress.progress = (d['downloaded_bytes'] / d['total_bytes_estimate']) * 100
+        # Calculate progress percentage with higher precision
+        downloaded_bytes = d.get('downloaded_bytes', 0)
+        total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
 
-        # Format speed
+        if total_bytes > 0:
+            # Use higher precision for smoother progress updates
+            progress.progress = min(100, (downloaded_bytes / total_bytes) * 100)
+        else:
+            # If no total size, show indeterminate progress based on downloaded amount
+            progress.progress = min(99, (downloaded_bytes / (1024 * 1024)) * 2)  # Rough estimate
+
+        # Enhanced speed calculation with smoothing
         speed = d.get('speed', 0)
         if speed:
-            if speed > 1024 * 1024:
-                progress.speed = f"{speed / (1024 * 1024):.1f} MB/s"
+            # Add to history for smoothing
+            progress.download_rate_history.append(speed)
+            if len(progress.download_rate_history) > 10:  # Keep last 10 measurements
+                progress.download_rate_history.pop(0)
+
+            # Calculate average speed for smoother display
+            avg_speed = sum(progress.download_rate_history) / len(progress.download_rate_history)
+
+            if avg_speed > 1024 * 1024:
+                progress.speed = f"{avg_speed / (1024 * 1024):.2f} MB/s"
+            elif avg_speed > 1024:
+                progress.speed = f"{avg_speed / 1024:.1f} KB/s"
             else:
-                progress.speed = f"{speed / 1024:.1f} KB/s"
+                progress.speed = f"{avg_speed:.0f} B/s"
+        else:
+            progress.speed = "0 MB/s"
 
-        # Format ETA
+        # Enhanced ETA calculation
         eta = d.get('eta', 0)
-        if eta:
-            minutes = eta // 60
-            seconds = eta % 60
-            progress.eta = f"{minutes:02d}:{seconds:02d}"
+        if eta and eta > 0:
+            if eta < 60:
+                progress.eta = f"00:{eta:02.0f}"
+            else:
+                minutes = int(eta // 60)
+                seconds = int(eta % 60)
+                if minutes < 60:
+                    progress.eta = f"{minutes:02d}:{seconds:02d}"
+                else:
+                    hours = minutes // 60
+                    minutes = minutes % 60
+                    progress.eta = f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            progress.eta = "--:--"
 
-        # Format size
-        downloaded = d.get('downloaded_bytes', 0)
-        total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-        if total:
-            progress.size = f"{downloaded / (1024*1024):.1f} / {total / (1024*1024):.1f} MB"
+        # Enhanced size formatting
+        if total_bytes > 0:
+            if total_bytes > 1024 * 1024 * 1024:  # GB
+                progress.size = f"{downloaded_bytes / (1024**3):.2f} / {total_bytes / (1024**3):.2f} GB"
+            else:  # MB
+                progress.size = f"{downloaded_bytes / (1024**2):.1f} / {total_bytes / (1024**2):.1f} MB"
+        else:
+            if downloaded_bytes > 1024 * 1024 * 1024:  # GB
+                progress.size = f"{downloaded_bytes / (1024**3):.2f} GB"
+            else:  # MB
+                progress.size = f"{downloaded_bytes / (1024**2):.1f} MB"
 
     elif d['status'] == 'finished':
-        progress.status = "finished"
+        progress.status = "completed"
         progress.progress = 100
         progress.filename = d.get('filename', '')
+        progress.speed = "0 MB/s"
+        progress.eta = "00:00"
+
+    elif d['status'] == 'error':
+        progress.status = "error"
+        progress.speed = "0 MB/s"
+        progress.eta = "00:00"
 
 @app.route('/')
 def index():
@@ -315,8 +488,24 @@ def analyze_video():
 
             # Calculate estimated file size for best quality
             estimated_size = calculate_estimated_size(video_info, 'best[height<=720]')
+
+            # If the estimated size is 0 or very small, try to get more accurate size
+            if estimated_size < 1024 * 1024:  # Less than 1MB, probably inaccurate
+                print(f"Initial size estimate too small ({estimated_size} bytes), trying accurate method...")
+                accurate_size = get_accurate_video_size(url, 'best[height<=720]')
+                if accurate_size > estimated_size:
+                    estimated_size = accurate_size
+                    print(f"Updated size to {estimated_size} bytes using accurate method")
+
             info['estimated_size'] = estimated_size
             info['estimated_size_formatted'] = format_file_size(estimated_size)
+
+            # Add additional size information for debugging
+            info['size_sources'] = {
+                'filesize': video_info.get('filesize', 0),
+                'filesize_approx': video_info.get('filesize_approx', 0),
+                'calculated': estimated_size
+            }
 
             return jsonify({'success': True, 'is_playlist': False, 'info': info})
 
@@ -702,12 +891,43 @@ def stop_download(download_id):
 @app.route('/api/progress/<download_id>')
 def get_progress(download_id):
     """Get download progress"""
-    progress = download_progress.get(download_id, {
-        'status': 'not_found',
-        'progress': 0,
-        'message': 'Download not found'
-    })
-    return jsonify(progress)
+    progress_obj = download_progress.get(download_id)
+
+    if progress_obj is None:
+        return jsonify({
+            'status': 'not_found',
+            'progress': 0,
+            'message': 'Download not found',
+            'speed': '0 MB/s',
+            'size': '0 MB',
+            'eta': '--:--'
+        })
+
+    # Handle both DownloadProgress objects and dictionary formats
+    if isinstance(progress_obj, DownloadProgress):
+        # Convert DownloadProgress object to dictionary
+        progress_data = {
+            'status': progress_obj.status,
+            'progress': progress_obj.progress,
+            'message': f'Downloading: {os.path.basename(progress_obj.filename)}' if progress_obj.filename else 'Downloading...',
+            'speed': progress_obj.speed,
+            'size': progress_obj.size,
+            'eta': progress_obj.eta,
+            'filename': progress_obj.filename
+        }
+    else:
+        # Already a dictionary (for playlist downloads, etc.)
+        progress_data = progress_obj.copy()
+
+        # Ensure all required fields are present
+        if 'speed' not in progress_data:
+            progress_data['speed'] = '0 MB/s'
+        if 'size' not in progress_data:
+            progress_data['size'] = '0 MB'
+        if 'eta' not in progress_data:
+            progress_data['eta'] = '--:--'
+
+    return jsonify(progress_data)
 
 @app.route('/api/default-folder', methods=['GET'])
 def get_default_folder():

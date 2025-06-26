@@ -601,6 +601,67 @@ body {
     text-align: center;
 }
 
+/* Size refresh button styling */
+.size-refresh-btn {
+    background: none;
+    border: none;
+    color: #3b82f6;
+    cursor: pointer;
+    padding: 2px 5px;
+    margin-left: 5px;
+    border-radius: 3px;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.size-refresh-btn:hover {
+    background-color: rgba(59, 130, 246, 0.1);
+    color: #2563eb;
+}
+
+.size-refresh-btn:active {
+    transform: scale(0.95);
+}
+
+.size-refresh-btn i {
+    font-size: 10px;
+}
+
+/* Notification system styling */
+.notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    color: white;
+    font-weight: 500;
+    z-index: 10000;
+    transform: translateX(400px);
+    transition: transform 0.3s ease;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.notification.show {
+    transform: translateX(0);
+}
+
+.notification-success {
+    background: linear-gradient(135deg, #10b981, #059669);
+}
+
+.notification-error {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+}
+
+.notification-info {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+}
+
+.notification-warning {
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
 /* Playlist Info Section */
 .playlist-info {
     background: white;
@@ -1228,12 +1289,14 @@ body {
 
 .progress-bar {
     width: 100%;
-    height: 12px;
+    height: 14px;
     background: #e2e8f0;
-    border-radius: 6px;
+    border-radius: 7px;
     overflow: hidden;
     margin-bottom: 16px;
     box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+    position: relative;
+    transition: all 0.3s ease;
 }
 
 .progress-fill {
@@ -1241,36 +1304,89 @@ body {
     background: linear-gradient(90deg, #3b82f6, #1d4ed8, #3b82f6);
     background-size: 200% 100%;
     width: 0%;
-    transition: width 0.5s ease;
-    border-radius: 6px;
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s ease;
+    border-radius: 7px;
+    animation: progressShimmer 2s infinite;
+    position: relative;
+    overflow: hidden;
+}
+
+/* Enhanced progress bar states */
+.progress-downloading .progress-fill {
+    background: linear-gradient(90deg, #3b82f6, #1d4ed8, #3b82f6);
+    animation: progressShimmer 1.5s infinite, progressPulse 2s infinite;
+}
+
+.progress-paused .progress-fill {
+    background: linear-gradient(90deg, #f59e0b, #d97706, #f59e0b);
+    animation: progressShimmer 3s infinite;
+}
+
+.progress-error .progress-fill {
+    background: linear-gradient(90deg, #ef4444, #dc2626, #ef4444);
     animation: progressShimmer 2s infinite;
 }
 
+/* Progress bar animations */
 @keyframes progressShimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
 }
 
-@keyframes progressShimmer {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
+@keyframes progressPulse {
+    0%, 100% {
+        box-shadow: 0 0 5px rgba(59, 130, 246, 0.3);
+        transform: scaleY(1);
+    }
+    50% {
+        box-shadow: 0 0 15px rgba(59, 130, 246, 0.6);
+        transform: scaleY(1.05);
+    }
 }
 
+/* Progress bar glow effect for active downloads */
+.progress-downloading {
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1), 0 0 10px rgba(59, 130, 246, 0.2);
+}
+
+/* Smooth progress text updates */
 .progress-info {
     display: flex;
     justify-content: space-between;
     margin-bottom: 20px;
     font-weight: 500;
     color: #1e293b;
+    transition: all 0.3s ease;
 }
 
+.progress-info span {
+    transition: color 0.3s ease;
+}
+
+/* Enhanced download stats with better spacing */
 .download-stats {
     display: flex;
     justify-content: space-between;
     font-size: 0.875rem;
     color: #64748b;
     margin-top: 12px;
+    transition: all 0.3s ease;
 }
+
+.download-stats span {
+    padding: 4px 8px;
+    background: rgba(59, 130, 246, 0.05);
+    border-radius: 6px;
+    transition: all 0.3s ease;
+    border: 1px solid rgba(59, 130, 246, 0.1);
+}
+
+.download-stats span:hover {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.2);
+}
+
+
 
 /* Download Controls */
 .download-controls {

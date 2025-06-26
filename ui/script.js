@@ -248,7 +248,15 @@ class YouTubeDownloader {
         this.elements.videoChannel.textContent = info.channel;
         this.elements.videoViews.innerHTML = `<i class="fas fa-eye"></i> ${info.views}`;
         this.elements.videoDate.innerHTML = `<i class="fas fa-calendar"></i> ${info.date}`;
-        this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${info.estimated_size_formatted || 'Size unknown'}`;
+        // Enhanced size display with refresh option
+        const sizeText = info.estimated_size_formatted || 'Size unknown';
+        const refreshButton = info.estimated_size && info.estimated_size > 0 ?
+            '' : '<button class="size-refresh-btn" onclick="app.refreshVideoSize()" title="Refresh size estimate"><i class="fas fa-sync-alt"></i></button>';
+
+        this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${sizeText} ${refreshButton}`;
+
+        // Store current URL for size refresh
+        this.currentVideoUrl = this.elements.videoUrl.value.trim();
         this.elements.duration.textContent = info.duration;
 
         // Hide playlist info and show video info
@@ -268,6 +276,52 @@ class YouTubeDownloader {
         this.elements.videoInfo.style.display = 'none';
         this.elements.playlistInfo.style.display = 'block';
         this.elements.playlistInfo.classList.add('fade-in');
+
+        // Store current URL for potential size refresh
+        this.currentVideoUrl = this.elements.videoUrl.value.trim();
+    }
+
+    async refreshVideoSize() {
+        if (!this.currentVideoUrl) {
+            this.showError('No video URL available for size refresh');
+            return;
+        }
+
+        // Show loading state
+        this.elements.videoSize.innerHTML = '<i class="fas fa-hdd"></i> <i class="fas fa-spinner fa-spin"></i> Refreshing size...';
+
+        try {
+            const response = await fetch('/api/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    url: this.currentVideoUrl,
+                    refresh_size: true  // Flag to indicate we want fresh size calculation
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success && !data.is_playlist) {
+                // Update only the size information
+                const sizeText = data.info.estimated_size_formatted || 'Size unknown';
+                const refreshButton = data.info.estimated_size && data.info.estimated_size > 0 ?
+                    '' : '<button class="size-refresh-btn" onclick="app.refreshVideoSize()" title="Refresh size estimate"><i class="fas fa-sync-alt"></i></button>';
+
+                this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${sizeText} ${refreshButton}`;
+
+                // Show success feedback
+                this.showNotification('Video size refreshed successfully!', 'success');
+            } else {
+                throw new Error(data.error || 'Failed to refresh video size');
+            }
+        } catch (error) {
+            console.error('Size refresh error:', error);
+            this.elements.videoSize.innerHTML = '<i class="fas fa-hdd"></i> Size refresh failed <button class="size-refresh-btn" onclick="app.refreshVideoSize()" title="Try again"><i class="fas fa-sync-alt"></i></button>';
+            this.showError('Failed to refresh video size: ' + error.message);
+        }
     }
 
     showDownloadOptions(isPlaylist = false) {
@@ -571,31 +625,43 @@ class YouTubeDownloader {
     }
 
     async monitorDownload(downloadId) {
-        const pollInterval = 1000; // Poll every second
+        // Progressive polling: faster updates during active downloading
+        let pollInterval = 250; // Start with 250ms for responsive updates
+        let consecutiveNoProgress = 0;
+        let lastProgress = 0;
 
         while (this.isDownloading) {
             try {
                 const response = await fetch(`/api/progress/${downloadId}`);
                 const progress = await response.json();
 
-                // Update progress display
-                this.elements.progressText.textContent = progress.message || 'Downloading...';
-                this.elements.progressPercent.textContent = `${Math.round(progress.progress || 0)}%`;
-                this.elements.progressFill.style.width = `${progress.progress || 0}%`;
+                // Update progress display with smooth animations
+                this.updateProgressDisplay(progress);
 
-                // Update download stats if available
-                this.elements.downloadSpeed.textContent = `Speed: ${progress.speed || '0 MB/s'}`;
-                this.elements.downloadSize.textContent = `Size: ${progress.size || '0 MB'}`;
-                this.elements.timeRemaining.textContent = `ETA: ${progress.eta || '--:--'}`;
+                // Adaptive polling based on progress activity
+                const currentProgress = progress.progress || 0;
+                if (Math.abs(currentProgress - lastProgress) < 0.1) {
+                    consecutiveNoProgress++;
+                    // Slow down polling if no progress for a while
+                    if (consecutiveNoProgress > 8) {
+                        pollInterval = Math.min(1000, pollInterval + 100);
+                    }
+                } else {
+                    consecutiveNoProgress = 0;
+                    // Speed up polling during active downloading
+                    pollInterval = progress.status === 'downloading' ? 250 : 500;
+                }
+                lastProgress = currentProgress;
 
-                // Debug logging
+                // Debug logging with better formatting
                 console.log('Progress update:', {
                     status: progress.status,
-                    progress: progress.progress,
-                    speed: progress.speed,
-                    size: progress.size,
-                    eta: progress.eta,
-                    message: progress.message
+                    progress: `${Math.round(progress.progress || 0)}%`,
+                    speed: progress.speed || 'N/A',
+                    size: progress.size || 'N/A',
+                    eta: progress.eta || 'N/A',
+                    message: progress.message || 'No message',
+                    pollInterval: `${pollInterval}ms`
                 });
 
                 // Check if download is complete
@@ -611,8 +677,87 @@ class YouTubeDownloader {
 
             } catch (error) {
                 console.error('Progress polling error:', error);
-                await new Promise(resolve => setTimeout(resolve, pollInterval));
+                // Use longer interval on error
+                await new Promise(resolve => setTimeout(resolve, Math.max(pollInterval, 1000)));
             }
+        }
+    }
+
+    updateProgressDisplay(progress) {
+        const progressValue = Math.max(0, Math.min(100, progress.progress || 0));
+        const roundedProgress = Math.round(progressValue);
+
+        // Update text elements with better fallbacks
+        const statusMessage = progress.message ||
+                            (progress.status === 'downloading' ? 'Downloading...' :
+                             progress.status === 'starting' ? 'Preparing download...' :
+                             progress.status === 'completed' ? 'Download completed!' :
+                             progress.status === 'error' ? 'Download failed' :
+                             'Processing...');
+
+        this.elements.progressText.textContent = statusMessage;
+        this.elements.progressPercent.textContent = `${roundedProgress}%`;
+
+        // Smooth progress bar animation
+        this.animateProgressBar(progressValue);
+
+        // Update download stats with enhanced formatting and validation
+        const speed = progress.speed && progress.speed !== 'undefined' ? progress.speed : '0 MB/s';
+        const size = progress.size && progress.size !== 'undefined' ? progress.size : '0 MB';
+        const eta = progress.eta && progress.eta !== 'undefined' ? progress.eta : '--:--';
+
+        this.elements.downloadSpeed.textContent = `Speed: ${speed}`;
+        this.elements.downloadSize.textContent = `Size: ${size}`;
+        this.elements.timeRemaining.textContent = `ETA: ${eta}`;
+
+        // Add visual feedback for different states
+        this.updateProgressBarState(progress.status, progressValue);
+    }
+
+    animateProgressBar(targetProgress) {
+        const progressFill = this.elements.progressFill;
+        const currentWidth = parseFloat(progressFill.style.width) || 0;
+
+        // Only animate if there's a significant change
+        if (Math.abs(targetProgress - currentWidth) > 0.1) {
+            // Add smooth transition
+            progressFill.style.transition = 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)';
+            progressFill.style.width = `${targetProgress}%`;
+
+            // Add pulse effect for active downloading
+            if (targetProgress > currentWidth && targetProgress < 100) {
+                progressFill.style.boxShadow = '0 0 10px rgba(59, 130, 246, 0.5)';
+                setTimeout(() => {
+                    progressFill.style.boxShadow = '';
+                }, 300);
+            }
+        }
+    }
+
+    updateProgressBarState(status, progress) {
+        const progressFill = this.elements.progressFill;
+        const progressBar = progressFill.parentElement;
+
+        // Remove existing state classes
+        progressBar.classList.remove('progress-downloading', 'progress-paused', 'progress-error');
+
+        // Add appropriate state class
+        switch (status) {
+            case 'downloading':
+                progressBar.classList.add('progress-downloading');
+                break;
+            case 'paused':
+                progressBar.classList.add('progress-paused');
+                break;
+            case 'error':
+                progressBar.classList.add('progress-error');
+                break;
+        }
+
+        // Add completion effect
+        if (progress >= 100) {
+            progressFill.style.background = 'linear-gradient(90deg, #10b981, #059669)';
+            progressBar.style.boxShadow = '0 0 20px rgba(16, 185, 129, 0.4)';
         }
     }
 
@@ -632,6 +777,26 @@ class YouTubeDownloader {
         this.elements.resultsCard.querySelector('.result-icon').innerHTML = '<i class="fas fa-exclamation-circle"></i>';
         this.elements.resultsCard.querySelector('h3').textContent = 'Download Failed';
         this.elements.resultMessage.textContent = message;
+    }
+
+    showNotification(message, type = 'info') {
+        // Create notification element if it doesn't exist
+        let notification = document.getElementById('notification');
+        if (!notification) {
+            notification = document.createElement('div');
+            notification.id = 'notification';
+            notification.className = 'notification';
+            document.body.appendChild(notification);
+        }
+
+        // Set message and type
+        notification.textContent = message;
+        notification.className = `notification notification-${type} show`;
+
+        // Auto-hide after 3 seconds
+        setTimeout(() => {
+            notification.classList.remove('show');
+        }, 3000);
     }
 
     hideAllSections() {
