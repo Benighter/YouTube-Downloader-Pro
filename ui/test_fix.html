@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test URL Validation Fix</title>
+</head>
+<body>
+    <h1>Test URL Validation</h1>
+    <input type="text" id="testUrl" placeholder="Enter a URL to test" style="width: 400px; padding: 10px;">
+    <button id="testBtn" onclick="testUrl()">Test URL</button>
+    <div id="result" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc;"></div>
+
+    <script>
+        function isValidUrl(url) {
+            try {
+                const urlObj = new URL(url);
+                // Accept any valid URL with http or https protocol
+                return (urlObj.protocol === 'http:' || urlObj.protocol === 'https:') && url.length > 10;
+            } catch {
+                return false;
+            }
+        }
+
+        function testUrl() {
+            const url = document.getElementById('testUrl').value.trim();
+            const isValid = isValidUrl(url);
+            const result = document.getElementById('result');
+            
+            result.innerHTML = `
+                <strong>URL:</strong> ${url}<br>
+                <strong>Valid:</strong> ${isValid ? 'YES' : 'NO'}<br>
+                <strong>Length:</strong> ${url.length}
+            `;
+            result.style.backgroundColor = isValid ? '#d4edda' : '#f8d7da';
+            result.style.color = isValid ? '#155724' : '#721c24';
+        }
+
+        // Test some URLs automatically
+        window.onload = function() {
+            const testUrls = [
+                'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                'https://www.tiktok.com/@user/video/123456789',
+                'https://www.instagram.com/p/ABC123/',
+                'https://twitter.com/user/status/123456789',
+                'https://example.com/video',
+                'invalid-url',
+                'http://short.url'
+            ];
+            
+            let results = '<h2>Automatic Tests:</h2>';
+            testUrls.forEach(url => {
+                const valid = isValidUrl(url);
+                results += `<div style="margin: 5px 0; padding: 5px; background: ${valid ? '#d4edda' : '#f8d7da'};">
+                    <strong>${url}</strong> - ${valid ? 'VALID' : 'INVALID'}
+                </div>`;
+            });
+            
+            document.body.innerHTML += results;
+        };
+    </script>
+</body>
+</html>

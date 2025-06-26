@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader Pro - yt-dlp UI</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <i class="fab fa-youtube"></i>
+                <h1>YouTube Downloader Pro</h1>
+            </div>
+            <div class="subtitle">
+                <p>Powered by yt-dlp • Download from 1000+ sites</p>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- URL Input Section -->
+            <section class="url-section">
+                <div class="input-group">
+                    <div class="input-wrapper">
+                        <i class="fas fa-link input-icon"></i>
+                        <input type="url" id="videoUrl" placeholder="Paste YouTube URL or any supported video link here..." class="url-input">
+                        <button id="analyzeBtn" class="analyze-btn">
+                            <i class="fas fa-search"></i>
+                            Analyze
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Video Info Section -->
+            <section class="video-info" id="videoInfo" style="display: none;">
+                <div class="info-card">
+                    <div class="video-thumbnail">
+                        <img id="thumbnail" src="" alt="Video thumbnail">
+                        <div class="duration-badge" id="duration"></div>
+                    </div>
+                    <div class="video-details">
+                        <h3 id="videoTitle">Video Title</h3>
+                        <p id="videoChannel">Channel Name</p>
+                        <div class="video-stats">
+                            <span id="videoViews"><i class="fas fa-eye"></i> 0 views</span>
+                            <span id="videoDate"><i class="fas fa-calendar"></i> Upload date</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Download Options -->
+            <section class="download-options" id="downloadOptions" style="display: none;">
+                <h2><i class="fas fa-download"></i> Download Options</h2>
+
+                <!-- Download Folder Selection -->
+                <div class="folder-selection">
+                    <h3><i class="fas fa-folder"></i> Download Location</h3>
+                    <div class="folder-input-group">
+                        <div class="folder-display">
+                            <i class="fas fa-folder-open"></i>
+                            <span id="selectedFolder">Default: yt-dlp folder</span>
+                        </div>
+                        <button class="folder-btn secondary" id="resetFolderBtn" style="display: none;">
+                            <i class="fas fa-undo"></i>
+                            Reset to Default
+                        </button>
+                    </div>
+
+                    <!-- Path Input Section -->
+                    <div class="folder-path-input">
+                        <label for="customPath">
+                            <i class="fas fa-folder-plus"></i>
+                            Enter download folder path:
+                        </label>
+                        <div class="path-input-group">
+                            <input type="text" id="customPath" placeholder="e.g., C:\Downloads\YouTube Videos or /home/user/Downloads" class="path-input">
+                            <button class="path-btn" id="useCustomPath">
+                                <i class="fas fa-check"></i>
+                                Set Folder
+                            </button>
+                        </div>
+                        <div class="path-examples">
+                            <small>
+                                <strong>Examples:</strong><br>
+                                Windows: <code>C:\Downloads\YouTube</code><br>
+                                Mac/Linux: <code>/Users/username/Downloads</code><br>
+                                Relative: <code>Downloads</code> (creates folder in current directory)
+                            </small>
+                        </div>
+                    </div>
+
+                    <div class="folder-help">
+                        <small><i class="fas fa-info-circle"></i> Enter the full path where you want to save downloads. The folder will be created if it doesn't exist.</small>
+                    </div>
+                </div>
+
+                <!-- Quality Presets -->
+                <div class="quality-presets">
+                    <h3>Quick Download</h3>
+                    <div class="preset-grid">
+                        <button class="preset-btn" data-format="best" data-type="video">
+                            <i class="fas fa-crown"></i>
+                            <span>Best Quality</span>
+                            <small>Highest available</small>
+                        </button>
+                        <button class="preset-btn" data-format="best[height<=1080]" data-type="video">
+                            <i class="fas fa-hd-video"></i>
+                            <span>1080p HD</span>
+                            <small>Full HD</small>
+                        </button>
+                        <button class="preset-btn" data-format="best[height<=720]" data-type="video">
+                            <i class="fas fa-video"></i>
+                            <span>720p HD</span>
+                            <small>Standard HD</small>
+                        </button>
+                        <button class="preset-btn" data-format="best[height<=480]" data-type="video">
+                            <i class="fas fa-mobile-alt"></i>
+                            <span>480p</span>
+                            <small>Mobile friendly</small>
+                        </button>
+                        <button class="preset-btn" data-format="bestaudio" data-type="audio">
+                            <i class="fas fa-music"></i>
+                            <span>Audio Only</span>
+                            <small>Best quality</small>
+                        </button>
+                        <button class="preset-btn" data-format="140" data-type="audio">
+                            <i class="fas fa-headphones"></i>
+                            <span>MP4 Audio</span>
+                            <small>M4A format</small>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Advanced Options -->
+                <div class="advanced-options">
+                    <button class="toggle-advanced" id="toggleAdvanced">
+                        <i class="fas fa-cog"></i> Advanced Options
+                        <i class="fas fa-chevron-down"></i>
+                    </button>
+                    <div class="advanced-content" id="advancedContent">
+                        <div class="option-group">
+                            <label>
+                                <input type="checkbox" id="downloadSubs"> Download Subtitles
+                            </label>
+                            <label>
+                                <input type="checkbox" id="downloadThumbnail"> Download Thumbnail
+                            </label>
+                            <label>
+                                <input type="checkbox" id="extractAudio"> Extract Audio (MP3)
+                            </label>
+                        </div>
+                        <div class="custom-format">
+                            <label for="customFormat">Custom Format:</label>
+                            <input type="text" id="customFormat" placeholder="e.g., best[height<=720][ext=mp4]">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Download Button -->
+                <button class="download-btn" id="downloadBtn" disabled>
+                    <i class="fas fa-download"></i>
+                    <span>Start Download</span>
+                </button>
+            </section>
+
+            <!-- Progress Section -->
+            <section class="progress-section" id="progressSection" style="display: none;">
+                <div class="progress-card">
+                    <h3><i class="fas fa-spinner fa-spin"></i> Downloading...</h3>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-info">
+                        <span id="progressText">Preparing download...</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                    <div class="download-stats">
+                        <span id="downloadSpeed">Speed: 0 MB/s</span>
+                        <span id="downloadSize">Size: 0 MB</span>
+                        <span id="timeRemaining">ETA: --:--</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section class="results-section" id="resultsSection" style="display: none;">
+                <div class="results-card success" id="resultsCard">
+                    <div class="result-icon">
+                        <i class="fas fa-check-circle"></i>
+                    </div>
+                    <h3>Download Complete!</h3>
+                    <p id="resultMessage">Your video has been downloaded successfully.</p>
+                    <div class="result-actions">
+                        <button class="btn-secondary" id="downloadAnother">
+                            <i class="fas fa-plus"></i> Download Another
+                        </button>
+                        <button class="btn-primary" id="openFolder">
+                            <i class="fas fa-folder-open"></i> Open Folder
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>
+                <i class="fas fa-heart text-red"></i> 
+                Built with yt-dlp • Supports 1000+ websites • 
+                <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </p>
+        </footer>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p>Analyzing video...</p>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
