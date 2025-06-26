@@ -138,6 +138,30 @@
                         <div class="video-stats">
                             <span id="videoViews"><i class="fas fa-eye"></i> 0 views</span>
                             <span id="videoDate"><i class="fas fa-calendar"></i> Upload date</span>
+                            <span id="videoSize"><i class="fas fa-hdd"></i> Calculating size...</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Playlist Info Section -->
+            <section class="playlist-info" id="playlistInfo" style="display: none;">
+                <div class="info-card">
+                    <div class="playlist-thumbnail">
+                        <img id="playlistThumbnail" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='180'%3E%3Crect width='100%25' height='100%25' fill='%23f1f5f9'/%3E%3C/svg%3E" alt="Playlist thumbnail">
+                        <div class="playlist-badge">
+                            <i class="fas fa-list"></i>
+                            <span id="videoCount">0 videos</span>
+                        </div>
+                    </div>
+                    <div class="playlist-details">
+                        <h3 id="playlistTitle">Playlist Title</h3>
+                        <div class="playlist-meta">
+                            <span id="playlistUploader"><i class="fas fa-user"></i> Channel Name</span>
+                            <span id="playlistSize"><i class="fas fa-hdd"></i> Calculating total size...</span>
+                        </div>
+                        <div class="playlist-description">
+                            <p>This playlist contains multiple videos. Choose how you'd like to download them:</p>
                         </div>
                     </div>
                 </div>
@@ -235,6 +259,41 @@
                     </div>
                 </div>
 
+                <!-- Playlist Download Type (only shown for playlists) -->
+                <div class="playlist-download-type" id="playlistDownloadType" style="display: none;">
+                    <h3><i class="fas fa-list"></i> Playlist Download Options</h3>
+                    <div class="download-type-grid">
+                        <div class="download-type-option" data-type="individual">
+                            <div class="type-icon">
+                                <i class="fas fa-folder-open"></i>
+                            </div>
+                            <div class="type-content">
+                                <h4>Individual Files</h4>
+                                <p>Download each video as a separate file in organized folders</p>
+                                <div class="type-features">
+                                    <span class="feature"><i class="fas fa-check"></i> Organized by playlist</span>
+                                    <span class="feature"><i class="fas fa-check"></i> Easy to browse</span>
+                                    <span class="feature"><i class="fas fa-check"></i> Selective playback</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="download-type-option" data-type="zip">
+                            <div class="type-icon">
+                                <i class="fas fa-file-archive"></i>
+                            </div>
+                            <div class="type-content">
+                                <h4>ZIP Archive</h4>
+                                <p>Download all videos and compress into a single ZIP file</p>
+                                <div class="type-features">
+                                    <span class="feature"><i class="fas fa-check"></i> Single file download</span>
+                                    <span class="feature"><i class="fas fa-check"></i> Easy to share</span>
+                                    <span class="feature"><i class="fas fa-check"></i> Space efficient</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Advanced Options -->
                 <div class="advanced-options">
                     <button class="toggle-advanced" id="toggleAdvanced">
@@ -282,6 +341,16 @@
                         <span id="downloadSpeed">Speed: 0 MB/s</span>
                         <span id="downloadSize">Size: 0 MB</span>
                         <span id="timeRemaining">ETA: --:--</span>
+                    </div>
+                    <div class="download-controls">
+                        <button class="control-btn pause-btn" id="pauseBtn">
+                            <i class="fas fa-pause"></i>
+                            <span>Pause</span>
+                        </button>
+                        <button class="control-btn stop-btn" id="stopBtn">
+                            <i class="fas fa-stop"></i>
+                            <span>Stop</span>
+                        </button>
                     </div>
                 </div>
             </section>

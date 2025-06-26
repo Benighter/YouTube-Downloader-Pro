@@ -35,7 +35,17 @@ class YouTubeDownloader {
             videoChannel: document.getElementById('videoChannel'),
             videoViews: document.getElementById('videoViews'),
             videoDate: document.getElementById('videoDate'),
+            videoSize: document.getElementById('videoSize'),
             duration: document.getElementById('duration'),
+
+            // Playlist info elements
+            playlistInfo: document.getElementById('playlistInfo'),
+            playlistThumbnail: document.getElementById('playlistThumbnail'),
+            playlistTitle: document.getElementById('playlistTitle'),
+            playlistUploader: document.getElementById('playlistUploader'),
+            playlistSize: document.getElementById('playlistSize'),
+            videoCount: document.getElementById('videoCount'),
+            playlistDownloadType: document.getElementById('playlistDownloadType'),
             
             // Download elements
             downloadBtn: document.getElementById('downloadBtn'),
@@ -74,6 +84,8 @@ class YouTubeDownloader {
             downloadSpeed: document.getElementById('downloadSpeed'),
             downloadSize: document.getElementById('downloadSize'),
             timeRemaining: document.getElementById('timeRemaining'),
+            pauseBtn: document.getElementById('pauseBtn'),
+            stopBtn: document.getElementById('stopBtn'),
             
             // Results elements
             resultsCard: document.getElementById('resultsCard'),
@@ -135,6 +147,10 @@ class YouTubeDownloader {
         // Download button
         this.elements.downloadBtn.addEventListener('click', () => this.startDownload());
 
+        // Download control buttons
+        this.elements.pauseBtn.addEventListener('click', () => this.pauseDownload());
+        this.elements.stopBtn.addEventListener('click', () => this.stopDownload());
+
         // Result actions
         this.elements.downloadAnother.addEventListener('click', () => this.resetInterface());
         this.elements.openFolder.addEventListener('click', () => this.openDownloadFolder());
@@ -188,16 +204,27 @@ class YouTubeDownloader {
             const data = await response.json();
 
             if (data.success) {
-                this.showVideoInfo({
-                    title: data.info.title,
-                    channel: data.info.channel,
-                    views: data.info.view_count + ' views',
-                    date: data.info.upload_date,
-                    duration: data.info.duration,
-                    thumbnail: data.info.thumbnail || "https://via.placeholder.com/200x112/667eea/ffffff?text=Video+Thumbnail"
-                });
-
-                this.showDownloadOptions();
+                if (data.is_playlist) {
+                    // Handle playlist
+                    this.showPlaylistInfo({
+                        title: data.playlist_info.title,
+                        uploader: data.playlist_info.uploader,
+                        videoCount: data.playlist_info.video_count,
+                        thumbnail: data.playlist_info.thumbnail || "https://via.placeholder.com/200x112/667eea/ffffff?text=Playlist+Thumbnail"
+                    });
+                    this.showDownloadOptions(true); // true indicates playlist mode
+                } else {
+                    // Handle single video
+                    this.showVideoInfo({
+                        title: data.info.title,
+                        channel: data.info.channel,
+                        views: data.info.view_count + ' views',
+                        date: data.info.upload_date,
+                        duration: data.info.duration,
+                        thumbnail: data.info.thumbnail || "https://via.placeholder.com/200x112/667eea/ffffff?text=Video+Thumbnail"
+                    });
+                    this.showDownloadOptions(false); // false indicates single video mode
+                }
             } else {
                 this.showError(data.error || 'Failed to analyze video');
             }
@@ -221,16 +248,66 @@ class YouTubeDownloader {
         this.elements.videoChannel.textContent = info.channel;
         this.elements.videoViews.innerHTML = `<i class="fas fa-eye"></i> ${info.views}`;
         this.elements.videoDate.innerHTML = `<i class="fas fa-calendar"></i> ${info.date}`;
+        this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${info.estimated_size_formatted || 'Size unknown'}`;
         this.elements.duration.textContent = info.duration;
 
+        // Hide playlist info and show video info
+        this.elements.playlistInfo.style.display = 'none';
         this.elements.videoInfo.style.display = 'block';
         this.elements.videoInfo.classList.add('fade-in');
     }
 
-    showDownloadOptions() {
+    showPlaylistInfo(info) {
+        this.elements.playlistThumbnail.src = info.thumbnail;
+        this.elements.playlistTitle.textContent = info.title;
+        this.elements.playlistUploader.textContent = info.uploader;
+        this.elements.playlistSize.innerHTML = `<i class="fas fa-hdd"></i> ${info.estimated_total_size_formatted || 'Calculating size...'}`;
+        this.elements.videoCount.textContent = `${info.videoCount} videos`;
+
+        // Hide video info and show playlist info
+        this.elements.videoInfo.style.display = 'none';
+        this.elements.playlistInfo.style.display = 'block';
+        this.elements.playlistInfo.classList.add('fade-in');
+    }
+
+    showDownloadOptions(isPlaylist = false) {
+        // Show/hide playlist-specific options
+        if (this.elements.playlistDownloadType) {
+            this.elements.playlistDownloadType.style.display = isPlaylist ? 'block' : 'none';
+        }
+
         this.elements.downloadOptions.style.display = 'block';
         this.elements.downloadOptions.classList.add('fade-in');
         this.elements.downloadBtn.disabled = false;
+
+        // Initialize playlist download type selection if it's a playlist
+        if (isPlaylist) {
+            this.initializePlaylistDownloadType();
+        }
+    }
+
+    initializePlaylistDownloadType() {
+        // Set default selection to individual files
+        this.selectedDownloadType = 'individual';
+
+        // Add event listeners for download type selection
+        const downloadTypeOptions = document.querySelectorAll('.download-type-option');
+        downloadTypeOptions.forEach(option => {
+            option.addEventListener('click', () => {
+                // Remove active class from all options
+                downloadTypeOptions.forEach(opt => opt.classList.remove('active'));
+                // Add active class to selected option
+                option.classList.add('active');
+                // Update selected type
+                this.selectedDownloadType = option.dataset.type;
+            });
+        });
+
+        // Set initial active state
+        const defaultOption = document.querySelector('.download-type-option[data-type="individual"]');
+        if (defaultOption) {
+            defaultOption.classList.add('active');
+        }
     }
 
     selectPreset(btn) {
@@ -381,23 +458,39 @@ class YouTubeDownloader {
             const customFormat = document.getElementById('customFormat')?.value.trim();
             const format = customFormat || this.selectedFormat;
 
+            // Check if this is a playlist download
+            const isPlaylist = this.elements.playlistInfo.style.display !== 'none';
+            const downloadType = this.selectedDownloadType || 'individual';
+
+            // Choose the appropriate API endpoint
+            const endpoint = isPlaylist ? '/api/download-playlist' : '/api/download';
+            const requestBody = {
+                url: this.currentUrl,
+                format: format,
+                options: options,
+                folder: this.selectedFolder
+            };
+
+            // Add playlist-specific options
+            if (isPlaylist) {
+                requestBody.download_type = downloadType;
+            }
+
             // Start download via API
-            const response = await fetch('/api/download', {
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    url: this.currentUrl,
-                    format: format,
-                    options: options,
-                    folder: this.selectedFolder
-                })
+                body: JSON.stringify(requestBody)
             });
 
             const data = await response.json();
 
             if (data.success) {
+                // Store download ID for pause/stop functionality
+                this.currentDownloadId = data.download_id;
+
                 // Monitor download progress
                 await this.monitorDownload(data.download_id);
             } else {
@@ -408,6 +501,72 @@ class YouTubeDownloader {
             this.showError('Download failed. Please try again.');
         } finally {
             this.isDownloading = false;
+        }
+    }
+
+    async pauseDownload() {
+        if (!this.currentDownloadId) return;
+
+        try {
+            const response = await fetch(`/api/pause/${this.currentDownloadId}`, {
+                method: 'POST'
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                // Update button states
+                this.elements.pauseBtn.innerHTML = '<i class="fas fa-play"></i><span>Resume</span>';
+                this.elements.pauseBtn.onclick = () => this.resumeDownload();
+                this.isPaused = true;
+            } else {
+                console.error('Failed to pause download:', data.error);
+            }
+        } catch (error) {
+            console.error('Error pausing download:', error);
+        }
+    }
+
+    async resumeDownload() {
+        if (!this.currentDownloadId) return;
+
+        try {
+            const response = await fetch(`/api/resume/${this.currentDownloadId}`, {
+                method: 'POST'
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                // Update button states
+                this.elements.pauseBtn.innerHTML = '<i class="fas fa-pause"></i><span>Pause</span>';
+                this.elements.pauseBtn.onclick = () => this.pauseDownload();
+                this.isPaused = false;
+            } else {
+                console.error('Failed to resume download:', data.error);
+            }
+        } catch (error) {
+            console.error('Error resuming download:', error);
+        }
+    }
+
+    async stopDownload() {
+        if (!this.currentDownloadId) return;
+
+        if (confirm('Are you sure you want to stop the download? This will cancel the current download.')) {
+            try {
+                const response = await fetch(`/api/stop/${this.currentDownloadId}`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    // Reset interface
+                    this.resetInterface();
+                } else {
+                    console.error('Failed to stop download:', data.error);
+                }
+            } catch (error) {
+                console.error('Error stopping download:', error);
+            }
         }
     }
 
@@ -425,15 +584,19 @@ class YouTubeDownloader {
                 this.elements.progressFill.style.width = `${progress.progress || 0}%`;
 
                 // Update download stats if available
-                if (progress.speed) {
-                    this.elements.downloadSpeed.textContent = `Speed: ${progress.speed}`;
-                }
-                if (progress.size) {
-                    this.elements.downloadSize.textContent = `Size: ${progress.size}`;
-                }
-                if (progress.eta) {
-                    this.elements.timeRemaining.textContent = `ETA: ${progress.eta}`;
-                }
+                this.elements.downloadSpeed.textContent = `Speed: ${progress.speed || '0 MB/s'}`;
+                this.elements.downloadSize.textContent = `Size: ${progress.size || '0 MB'}`;
+                this.elements.timeRemaining.textContent = `ETA: ${progress.eta || '--:--'}`;
+
+                // Debug logging
+                console.log('Progress update:', {
+                    status: progress.status,
+                    progress: progress.progress,
+                    speed: progress.speed,
+                    size: progress.size,
+                    eta: progress.eta,
+                    message: progress.message
+                });
 
                 // Check if download is complete
                 if (progress.status === 'completed') {

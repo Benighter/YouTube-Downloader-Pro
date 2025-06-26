@@ -151,6 +151,8 @@ python ui/server.py
 ## 🎯 **Usage Guide**
 
 ### **Basic Usage**
+
+#### **Single Video Download**
 1. **Launch the Application** - Run `python ui/server.py`
 2. **Open Web Interface** - Go to `http://localhost:5000`
 3. **Paste Video URL** - Enter the URL of the video you want to download
@@ -158,6 +160,16 @@ python ui/server.py
 5. **Choose Format** - Select your preferred video quality and format
 6. **Select Folder** - Choose where to save the downloaded file
 7. **Start Download** - Click download and monitor progress in real-time
+
+#### **Playlist Download** 🆕
+1. **Paste Playlist URL** - Enter a YouTube playlist URL or any supported playlist link
+2. **Click Analyze** - The app will detect it's a playlist and show playlist information
+3. **Choose Download Type**:
+   - **Individual Files** - Downloads each video as separate files in organized folders
+   - **ZIP Archive** - Downloads all videos and compresses them into a single ZIP file
+4. **Select Quality** - Choose your preferred video quality for all videos in the playlist
+5. **Select Folder** - Choose where to save the downloaded files/ZIP
+6. **Start Download** - Monitor progress as each video downloads
 
 ### **Advanced Features**
 
@@ -172,12 +184,25 @@ python ui/server.py
 - **Metadata Display** - View title, duration, uploader, and view count
 - **Format Selection** - Choose from all available video and audio qualities
 - **File Size Information** - Know the download size before starting
+- **Playlist Detection** 🆕 - Automatically detects and displays playlist information
+- **Video Count Display** 🆕 - Shows total number of videos in playlists
 
-#### **📊 Progress Monitoring**
+#### **📦 Playlist Downloads** 🆕
+- **Individual File Downloads** - Each video saved as separate file in organized folders
+- **ZIP Archive Creation** - All playlist videos compressed into single ZIP file
+- **Smart Organization** - Playlist videos organized by playlist name and numbered
+- **Flexible Format Selection** - Apply same quality settings to all playlist videos
+- **Progress Tracking** - Monitor download progress across entire playlist
+
+#### **📊 Progress Monitoring & Control** 🆕
 - **Real-time Progress** - Live progress bar with percentage completion
 - **Download Speed** - Current download speed in MB/s
 - **ETA Calculation** - Estimated time remaining for completion
 - **File Size Tracking** - Current downloaded size vs. total file size
+- **Storage Size Preview** 🆕 - See exact file sizes before downloading
+- **Playlist Size Estimation** 🆕 - Total storage space needed for entire playlists
+- **Pause/Resume Downloads** 🆕 - Pause and resume active downloads
+- **Stop/Cancel Downloads** 🆕 - Cancel downloads with confirmation dialog
 
 ### **Supported Platforms**
 - **YouTube** - All video types, playlists, and live streams
@@ -218,11 +243,16 @@ YouTube-Downloader-Pro/
 
 ### **API Endpoints**
 - `GET /` - Main web interface
-- `POST /analyze` - Video URL analysis
-- `POST /download` - Start video download
-- `GET /progress/<task_id>` - Download progress
+- `POST /api/analyze` - Video/Playlist URL analysis with size estimation 🆕
+- `POST /api/download` - Start single video download
+- `POST /api/download-playlist` - Start playlist download 🆕
+- `GET /api/progress/<task_id>` - Download progress tracking
+- `POST /api/pause/<task_id>` - Pause active download 🆕
+- `POST /api/resume/<task_id>` - Resume paused download 🆕
+- `POST /api/stop/<task_id>` - Stop/cancel active download 🆕
 - `GET /api/folders` - Browse filesystem
 - `POST /api/create-folder` - Create new folder
+- `POST /api/open-folder` - Open download folder in file explorer
 
 ### **Configuration**
 The application can be configured through environment variables:

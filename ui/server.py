@@ -10,6 +10,9 @@ import json
 import subprocess
 import threading
 import time
+import zipfile
+import tempfile
+import shutil
 from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_cors import CORS
 import re
@@ -23,6 +26,105 @@ CORS(app)
 # Global variables for download progress
 download_progress = {}
 active_downloads = {}
+download_processes = {}  # Store subprocess objects for pause/stop functionality
+
+def format_file_size(size_bytes):
+    """Format file size in bytes to human readable format"""
+    if size_bytes == 0:
+        return "Unknown size"
+
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} PB"
+
+def calculate_estimated_size(video_info, format_selector='best'):
+    """Calculate estimated file size based on available formats"""
+    formats = video_info.get('formats', [])
+    if not formats:
+        return 0
+
+    # Try to find the best matching format
+    best_format = None
+
+    # Simple format selection logic
+    if format_selector == 'best':
+        best_format = max(formats, key=lambda f: f.get('filesize', 0) or f.get('filesize_approx', 0) or 0)
+    elif 'height' in format_selector:
+        # Extract height from format selector like 'best[height<=720]'
+        try:
+            height_limit = int(format_selector.split('height<=')[1].split(']')[0])
+            suitable_formats = [f for f in formats if f.get('height', 0) <= height_limit]
+            if suitable_formats:
+                best_format = max(suitable_formats, key=lambda f: f.get('height', 0))
+        except:
+            best_format = formats[0] if formats else None
+    else:
+        best_format = formats[0] if formats else None
+
+    if best_format:
+        return best_format.get('filesize') or best_format.get('filesize_approx') or 0
+
+    return 0
+
+def estimate_playlist_size(url, format_selector='best[height<=720]'):
+    """Estimate total size of a playlist"""
+    try:
+        # Get playlist info with file sizes
+        cmd = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--dump-json',
+            '--no-download',
+            '--flat-playlist',
+            url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+
+        if result.returncode != 0:
+            return 0, 0
+
+        lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+        video_count = len(lines)
+
+        # Sample a few videos to estimate average size
+        sample_size = min(3, video_count)  # Sample up to 3 videos
+        total_sample_size = 0
+
+        for i in range(sample_size):
+            try:
+                video_data = json.loads(lines[i])
+                video_url = video_data.get('url', '')
+                if video_url:
+                    # Get detailed info for this video
+                    video_cmd = [
+                        sys.executable, '-m', 'yt_dlp',
+                        '--no-check-certificate',
+                        '--dump-json',
+                        '--no-download',
+                        video_url
+                    ]
+
+                    video_result = subprocess.run(video_cmd, capture_output=True, text=True, cwd='..')
+                    if video_result.returncode == 0:
+                        video_info = json.loads(video_result.stdout)
+                        estimated_size = calculate_estimated_size(video_info, format_selector)
+                        total_sample_size += estimated_size
+            except:
+                continue
+
+        # Calculate average and estimate total
+        if sample_size > 0:
+            average_size = total_sample_size / sample_size
+            estimated_total = average_size * video_count
+            return estimated_total, video_count
+
+        return 0, video_count
+
+    except Exception:
+        return 0, 0
 
 class DownloadProgress:
     def __init__(self):
@@ -98,35 +200,125 @@ def analyze_video():
         if not url:
             return jsonify({'error': 'URL is required'}), 400
 
-        # Use yt-dlp to extract video info
-        cmd = [
+        # First check if it's a playlist
+        playlist_cmd = [
             sys.executable, '-m', 'yt_dlp',
             '--no-check-certificate',
             '--dump-json',
             '--no-download',
+            '--flat-playlist',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            '--extractor-retries', '3',
             url
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+        playlist_result = subprocess.run(playlist_cmd, capture_output=True, text=True, cwd='..')
 
-        if result.returncode != 0:
-            return jsonify({'error': 'Failed to analyze video'}), 400
+        # Check if it's a playlist by counting entries
+        is_playlist = False
+        playlist_info = None
+        video_count = 0
 
-        # Parse the JSON output
-        video_info = json.loads(result.stdout)
+        if playlist_result.returncode == 0:
+            lines = [line.strip() for line in playlist_result.stdout.strip().split('\n') if line.strip()]
+            if len(lines) > 1:  # More than one entry means it's a playlist
+                is_playlist = True
+                video_count = len(lines)
 
-        # Extract relevant information
-        info = {
-            'title': video_info.get('title', 'Unknown Title'),
-            'channel': video_info.get('uploader', 'Unknown Channel'),
-            'duration': format_duration(video_info.get('duration', 0)),
-            'view_count': format_number(video_info.get('view_count', 0)),
-            'upload_date': format_date(video_info.get('upload_date', '')),
-            'thumbnail': video_info.get('thumbnail', ''),
-            'formats': extract_formats(video_info.get('formats', []))
-        }
+                # Get playlist metadata
+                playlist_meta_cmd = [
+                    sys.executable, '-m', 'yt_dlp',
+                    '--no-check-certificate',
+                    '--dump-json',
+                    '--no-download',
+                    '--playlist-items', '1',
+                    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    '--extractor-retries', '3',
+                    url
+                ]
 
-        return jsonify({'success': True, 'info': info})
+                meta_result = subprocess.run(playlist_meta_cmd, capture_output=True, text=True, cwd='..')
+                if meta_result.returncode == 0:
+                    try:
+                        first_video = json.loads(meta_result.stdout.strip())
+                        playlist_info = {
+                            'title': first_video.get('playlist_title', 'Unknown Playlist'),
+                            'uploader': first_video.get('playlist_uploader', first_video.get('uploader', 'Unknown')),
+                            'video_count': video_count,
+                            'playlist_id': first_video.get('playlist_id', ''),
+                            'thumbnail': first_video.get('playlist_thumbnail') or first_video.get('thumbnail', '')
+                        }
+                    except json.JSONDecodeError:
+                        # Fallback playlist info if JSON parsing fails
+                        playlist_info = {
+                            'title': 'Playlist',
+                            'uploader': 'Unknown',
+                            'video_count': video_count,
+                            'playlist_id': '',
+                            'thumbnail': ''
+                        }
+
+        if is_playlist:
+            # Estimate playlist size
+            estimated_total_size, video_count_confirmed = estimate_playlist_size(url)
+            if playlist_info:
+                playlist_info['estimated_total_size'] = estimated_total_size
+                playlist_info['estimated_total_size_formatted'] = format_file_size(estimated_total_size)
+                playlist_info['video_count'] = video_count_confirmed or playlist_info['video_count']
+
+            return jsonify({
+                'success': True,
+                'is_playlist': True,
+                'playlist_info': playlist_info
+            })
+        else:
+            # Use yt-dlp to extract single video info
+            cmd = [
+                sys.executable, '-m', 'yt_dlp',
+                '--no-check-certificate',
+                '--dump-json',
+                '--no-download',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                '--extractor-retries', '3',
+                url
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+
+            if result.returncode != 0:
+                # Better error message for common issues
+                error_msg = result.stderr.strip() if result.stderr else 'Failed to analyze video'
+                if 'Failed to extract any player response' in error_msg:
+                    error_msg = 'This video may be unavailable, private, or region-blocked. Please try a different video or check if the URL is correct.'
+                elif 'Video unavailable' in error_msg:
+                    error_msg = 'This video is unavailable. It may have been deleted or made private.'
+                return jsonify({'error': error_msg}), 400
+
+            try:
+                # Parse the JSON output
+                video_info = json.loads(result.stdout)
+
+                # Extract relevant information
+                info = {
+                    'title': video_info.get('title', 'Unknown Title'),
+                    'channel': video_info.get('uploader', 'Unknown Channel'),
+                    'duration': format_duration(video_info.get('duration', 0)),
+                    'view_count': format_number(video_info.get('view_count', 0)),
+                    'upload_date': format_date(video_info.get('upload_date', '')),
+                    'thumbnail': video_info.get('thumbnail', ''),
+                    'formats': extract_formats(video_info.get('formats', [])),
+                    'filesize_approx': video_info.get('filesize_approx', 0),
+                    'filesize': video_info.get('filesize', 0)
+                }
+            except json.JSONDecodeError:
+                return jsonify({'error': 'Failed to parse video information'}), 400
+
+            # Calculate estimated file size for best quality
+            estimated_size = calculate_estimated_size(video_info, 'best[height<=720]')
+            info['estimated_size'] = estimated_size
+            info['estimated_size_formatted'] = format_file_size(estimated_size)
+
+            return jsonify({'success': True, 'is_playlist': False, 'info': info})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -175,7 +367,9 @@ def start_download():
             sys.executable, '-m', 'yt_dlp',
             '--no-check-certificate',
             '-f', format_selector,
-            '--output', output_template
+            '--output', output_template,
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            '--extractor-retries', '3'
         ]
 
         # Add optional flags
@@ -193,20 +387,48 @@ def start_download():
         # Start download in background thread
         def run_download():
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
-                if result.returncode == 0:
+                # Use Popen for better process control
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         text=True, cwd='..')
+
+                # Store the process for pause/stop functionality
+                download_processes[download_id] = process
+
+                # Wait for completion
+                stdout, stderr = process.communicate()
+
+                # Clean up process reference
+                if download_id in download_processes:
+                    del download_processes[download_id]
+
+                if process.returncode == 0:
                     download_progress[download_id] = {
                         'status': 'completed',
                         'progress': 100,
                         'message': 'Download completed successfully!'
                     }
                 else:
+                    # Check if it was cancelled
+                    if download_progress.get(download_id, {}).get('status') == 'cancelled':
+                        return  # Don't overwrite cancelled status
+
+                    # Better error messages
+                    error_msg = stderr.strip() if stderr else 'Download failed'
+                    if 'Failed to extract any player response' in error_msg:
+                        error_msg = 'This video may be unavailable, private, or region-blocked. Please try a different video.'
+                    elif 'Video unavailable' in error_msg:
+                        error_msg = 'This video is unavailable. It may have been deleted or made private.'
+
                     download_progress[download_id] = {
                         'status': 'error',
                         'progress': 0,
-                        'message': f'Download failed: {result.stderr}'
+                        'message': error_msg
                     }
             except Exception as e:
+                # Clean up process reference
+                if download_id in download_processes:
+                    del download_processes[download_id]
+
                 download_progress[download_id] = {
                     'status': 'error',
                     'progress': 0,
@@ -227,6 +449,253 @@ def start_download():
 
         return jsonify({'success': True, 'download_id': download_id})
 
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download-playlist', methods=['POST'])
+def start_playlist_download():
+    """Start playlist download"""
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        format_selector = data.get('format', 'best[height<=720]')
+        options = data.get('options', {})
+        folder = data.get('folder', '').strip()
+        download_type = data.get('download_type', 'individual')  # 'individual' or 'zip'
+
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+
+        if not folder:
+            return jsonify({'error': 'Download folder is required'}), 400
+
+        # Generate unique download ID
+        download_id = f"playlist_{int(time.time() * 1000)}"
+
+        # Initialize progress tracking
+        download_progress[download_id] = {
+            'status': 'starting',
+            'progress': 0,
+            'message': 'Preparing playlist download...',
+            'current_video': 0,
+            'total_videos': 0,
+            'current_title': '',
+            'download_type': download_type
+        }
+
+        # Create download directory
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except Exception as e:
+            return jsonify({'error': f'Cannot create directory: {str(e)}'}), 400
+
+        def run_playlist_download():
+            try:
+                if download_type == 'zip':
+                    # Create temporary directory for downloads
+                    temp_dir = tempfile.mkdtemp()
+                    download_folder = temp_dir
+                else:
+                    download_folder = folder
+
+                # Build output template
+                if download_type == 'zip':
+                    output_template = os.path.join(download_folder, '%(playlist_index)s - %(title)s.%(ext)s')
+                else:
+                    output_template = os.path.join(download_folder, '%(playlist_title)s', '%(playlist_index)s - %(title)s.%(ext)s')
+
+                # Build yt-dlp command for playlist
+                cmd = [
+                    sys.executable, '-m', 'yt_dlp',
+                    '--no-check-certificate',
+                    '-f', format_selector,
+                    '--output', output_template,
+                    '--write-info-json' if options.get('write_info_json') else '--no-write-info-json',
+                    '--write-thumbnail' if options.get('write_thumbnail') else '--no-write-thumbnail'
+                ]
+
+                # Add audio options if specified
+                if options.get('extract_audio'):
+                    cmd.extend(['--extract-audio', '--audio-format', options.get('audio_format', 'mp3')])
+
+                cmd.append(url)
+
+                # Custom progress hook for playlist
+                def playlist_progress_hook(d):
+                    progress = download_progress.get(download_id, {})
+
+                    if d['status'] == 'downloading':
+                        # Extract playlist info from filename
+                        filename = d.get('filename', '')
+                        if filename:
+                            basename = os.path.basename(filename)
+                            progress['current_title'] = basename
+
+                        # Update progress
+                        downloaded = d.get('downloaded_bytes', 0)
+                        total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                        if total:
+                            file_progress = (downloaded / total) * 100
+                            progress['progress'] = file_progress
+                            progress['size'] = f"{downloaded / (1024*1024):.1f} / {total / (1024*1024):.1f} MB"
+
+                        progress['status'] = 'downloading'
+                        progress['message'] = f'Downloading: {progress.get("current_title", "video")}'
+
+                    elif d['status'] == 'finished':
+                        progress['current_video'] = progress.get('current_video', 0) + 1
+                        progress['message'] = f'Completed {progress["current_video"]} videos'
+
+                # Run the download
+                result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+
+                if result.returncode == 0:
+                    if download_type == 'zip':
+                        # Create ZIP file
+                        zip_filename = f"playlist_{int(time.time())}.zip"
+                        zip_path = os.path.join(folder, zip_filename)
+
+                        download_progress[download_id]['status'] = 'creating_zip'
+                        download_progress[download_id]['message'] = 'Creating ZIP file...'
+
+                        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            for root, dirs, files in os.walk(temp_dir):
+                                for file in files:
+                                    file_path = os.path.join(root, file)
+                                    arcname = os.path.relpath(file_path, temp_dir)
+                                    zipf.write(file_path, arcname)
+
+                        # Clean up temp directory
+                        shutil.rmtree(temp_dir)
+
+                        download_progress[download_id] = {
+                            'status': 'completed',
+                            'progress': 100,
+                            'message': f'Playlist downloaded as ZIP: {zip_filename}',
+                            'zip_file': zip_filename,
+                            'download_type': 'zip'
+                        }
+                    else:
+                        download_progress[download_id] = {
+                            'status': 'completed',
+                            'progress': 100,
+                            'message': 'Playlist download completed successfully!',
+                            'download_type': 'individual'
+                        }
+                else:
+                    download_progress[download_id] = {
+                        'status': 'error',
+                        'progress': 0,
+                        'message': f'Download failed: {result.stderr}'
+                    }
+
+            except Exception as e:
+                download_progress[download_id] = {
+                    'status': 'error',
+                    'progress': 0,
+                    'message': f'Download error: {str(e)}'
+                }
+
+        # Start download thread
+        thread = threading.Thread(target=run_playlist_download)
+        thread.daemon = True
+        thread.start()
+
+        return jsonify({'success': True, 'download_id': download_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/pause/<download_id>', methods=['POST'])
+def pause_download(download_id):
+    """Pause a download"""
+    try:
+        if download_id in download_processes:
+            process = download_processes[download_id]
+            if process and process.poll() is None:  # Process is still running
+                # On Windows, we need to use a different approach
+                import signal
+                try:
+                    if sys.platform == "win32":
+                        # On Windows, we'll mark it as paused and let the process continue
+                        # The actual pausing will be handled by the frontend
+                        download_progress[download_id]['status'] = 'paused'
+                        download_progress[download_id]['message'] = 'Download paused'
+                    else:
+                        # On Unix systems, we can send SIGSTOP
+                        process.send_signal(signal.SIGSTOP)
+                        download_progress[download_id]['status'] = 'paused'
+                        download_progress[download_id]['message'] = 'Download paused'
+
+                    return jsonify({'success': True, 'message': 'Download paused'})
+                except Exception as e:
+                    return jsonify({'error': f'Failed to pause: {str(e)}'}), 500
+            else:
+                return jsonify({'error': 'Download not active'}), 400
+        else:
+            return jsonify({'error': 'Download not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/resume/<download_id>', methods=['POST'])
+def resume_download(download_id):
+    """Resume a paused download"""
+    try:
+        if download_id in download_processes:
+            process = download_processes[download_id]
+            if process and process.poll() is None:  # Process is still running
+                import signal
+                try:
+                    if sys.platform == "win32":
+                        # On Windows, just update the status
+                        download_progress[download_id]['status'] = 'downloading'
+                        download_progress[download_id]['message'] = 'Download resumed'
+                    else:
+                        # On Unix systems, send SIGCONT
+                        process.send_signal(signal.SIGCONT)
+                        download_progress[download_id]['status'] = 'downloading'
+                        download_progress[download_id]['message'] = 'Download resumed'
+
+                    return jsonify({'success': True, 'message': 'Download resumed'})
+                except Exception as e:
+                    return jsonify({'error': f'Failed to resume: {str(e)}'}), 500
+            else:
+                return jsonify({'error': 'Download not active'}), 400
+        else:
+            return jsonify({'error': 'Download not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stop/<download_id>', methods=['POST'])
+def stop_download(download_id):
+    """Stop/cancel a download"""
+    try:
+        if download_id in download_processes:
+            process = download_processes[download_id]
+            if process and process.poll() is None:  # Process is still running
+                try:
+                    process.terminate()  # Graceful termination
+                    # Wait a bit for graceful termination
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()  # Force kill if it doesn't terminate gracefully
+
+                    # Clean up
+                    del download_processes[download_id]
+                    download_progress[download_id] = {
+                        'status': 'cancelled',
+                        'progress': 0,
+                        'message': 'Download cancelled by user'
+                    }
+
+                    return jsonify({'success': True, 'message': 'Download stopped'})
+                except Exception as e:
+                    return jsonify({'error': f'Failed to stop: {str(e)}'}), 500
+            else:
+                return jsonify({'error': 'Download not active'}), 400
+        else:
+            return jsonify({'error': 'Download not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
