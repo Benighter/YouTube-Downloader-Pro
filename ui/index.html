@@ -5,19 +5,69 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube Downloader Pro - yt-dlp UI</title>
     <link rel="stylesheet" href="style.css">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 </head>
 <body>
+    <!-- Animated Background -->
+    <div class="animated-bg">
+        <div class="floating-shapes">
+            <div class="shape shape-1"></div>
+            <div class="shape shape-2"></div>
+            <div class="shape shape-3"></div>
+            <div class="shape shape-4"></div>
+            <div class="shape shape-5"></div>
+            <div class="shape shape-6"></div>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <i class="fab fa-youtube pulse-animation"></i>
+                <span>YT Downloader Pro</span>
+            </div>
+            <div class="nav-links">
+                <a href="#home" class="nav-link active" data-section="home">
+                    <i class="fas fa-home"></i>
+                    <span>Home</span>
+                </a>
+                <a href="#about" class="nav-link" data-section="about">
+                    <i class="fas fa-info-circle"></i>
+                    <span>About</span>
+                </a>
+                <a href="#contact" class="nav-link" data-section="contact">
+                    <i class="fas fa-user"></i>
+                    <span>Developer</span>
+                </a>
+            </div>
+        </div>
+    </nav>
+
     <div class="container">
         <!-- Header -->
-        <header class="header">
-            <div class="logo">
-                <i class="fab fa-youtube"></i>
-                <h1>YouTube Downloader Pro</h1>
-            </div>
-            <div class="subtitle">
-                <p>Powered by yt-dlp • Download from 1000+ sites</p>
+        <header class="header" id="home">
+            <div class="logo-container">
+                <div class="logo">
+                    <div class="logo-icon">
+                        <i class="fab fa-youtube"></i>
+                        <div class="logo-glow"></div>
+                    </div>
+                    <div class="logo-text">
+                        <h1>YouTube Downloader Pro</h1>
+                        <div class="logo-underline"></div>
+                    </div>
+                </div>
+                <div class="subtitle">
+                    <p><i class="fas fa-rocket"></i> Powered by yt-dlp • Download from 1000+ sites</p>
+                    <div class="feature-badges">
+                        <span class="badge"><i class="fas fa-bolt"></i> Ultra Fast</span>
+                        <span class="badge"><i class="fas fa-shield-alt"></i> Secure</span>
+                        <span class="badge"><i class="fas fa-mobile-alt"></i> Responsive</span>
+                    </div>
+                </div>
             </div>
         </header>
 
@@ -25,14 +75,52 @@
         <main class="main-content">
             <!-- URL Input Section -->
             <section class="url-section">
+                <div class="section-header">
+                    <h2><i class="fas fa-download"></i> Download Your Favorite Videos</h2>
+                    <p>Paste any video URL and get started in seconds</p>
+                </div>
                 <div class="input-group">
                     <div class="input-wrapper">
-                        <i class="fas fa-link input-icon"></i>
-                        <input type="url" id="videoUrl" placeholder="Paste YouTube URL or any supported video link here..." class="url-input">
+                        <div class="input-container">
+                            <i class="fas fa-link input-icon"></i>
+                            <input type="url" id="videoUrl" placeholder="Paste YouTube URL or any supported video link here..." class="url-input">
+                            <div class="input-glow"></div>
+                        </div>
                         <button id="analyzeBtn" class="analyze-btn">
-                            <i class="fas fa-search"></i>
-                            Analyze
+                            <div class="btn-content">
+                                <i class="fas fa-search"></i>
+                                <span>Analyze</span>
+                            </div>
+                            <div class="btn-ripple"></div>
                         </button>
+                    </div>
+                    <div class="url-suggestions">
+                        <div class="suggestions-grid">
+                            <div class="suggestion-item">
+                                <i class="fab fa-youtube"></i>
+                                <span>YouTube</span>
+                            </div>
+                            <div class="suggestion-item">
+                                <i class="fab fa-vimeo"></i>
+                                <span>Vimeo</span>
+                            </div>
+                            <div class="suggestion-item">
+                                <i class="fab fa-tiktok"></i>
+                                <span>TikTok</span>
+                            </div>
+                            <div class="suggestion-item">
+                                <i class="fab fa-instagram"></i>
+                                <span>Instagram</span>
+                            </div>
+                            <div class="suggestion-item">
+                                <i class="fab fa-twitter"></i>
+                                <span>Twitter</span>
+                            </div>
+                            <div class="suggestion-item">
+                                <i class="fas fa-plus"></i>
+                                <span>1000+ More</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -41,7 +129,7 @@
             <section class="video-info" id="videoInfo" style="display: none;">
                 <div class="info-card">
                     <div class="video-thumbnail">
-                        <img id="thumbnail" src="" alt="Video thumbnail">
+                        <img id="thumbnail" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='180'%3E%3Crect width='100%25' height='100%25' fill='%23f1f5f9'/%3E%3C/svg%3E" alt="Video thumbnail">
                         <div class="duration-badge" id="duration"></div>
                     </div>
                     <div class="video-details">
@@ -218,15 +306,163 @@
             </section>
         </main>
 
+        <!-- About Section -->
+        <section class="about-section" id="about" style="display: none;">
+            <div class="section-container">
+                <div class="section-header">
+                    <h2><i class="fas fa-info-circle"></i> About YouTube Downloader Pro</h2>
+                    <p>The ultimate video downloading solution</p>
+                </div>
+                <div class="about-content">
+                    <div class="about-grid">
+                        <div class="about-card">
+                            <div class="card-icon">
+                                <i class="fas fa-rocket"></i>
+                            </div>
+                            <h3>Lightning Fast</h3>
+                            <p>Download videos at maximum speed with optimized algorithms and multi-threading support.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="card-icon">
+                                <i class="fas fa-shield-alt"></i>
+                            </div>
+                            <h3>Secure & Safe</h3>
+                            <p>No malware, no ads, no tracking. Your privacy and security are our top priorities.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="card-icon">
+                                <i class="fas fa-globe"></i>
+                            </div>
+                            <h3>1000+ Sites</h3>
+                            <p>Support for YouTube, Vimeo, TikTok, Instagram, Twitter, and hundreds more platforms.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="card-icon">
+                                <i class="fas fa-cog"></i>
+                            </div>
+                            <h3>Advanced Options</h3>
+                            <p>Choose quality, format, audio-only downloads, and customize your download preferences.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="card-icon">
+                                <i class="fas fa-mobile-alt"></i>
+                            </div>
+                            <h3>Responsive Design</h3>
+                            <p>Works perfectly on desktop, tablet, and mobile devices with a beautiful interface.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="card-icon">
+                                <i class="fas fa-code"></i>
+                            </div>
+                            <h3>Open Source</h3>
+                            <p>Built with modern web technologies and powered by the reliable yt-dlp engine.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Developer Contact Section -->
+        <section class="contact-section" id="contact" style="display: none;">
+            <div class="section-container">
+                <div class="section-header">
+                    <h2><i class="fas fa-user"></i> Meet the Developer</h2>
+                    <p>Connect with Bennet Nkolele</p>
+                </div>
+                <div class="contact-content">
+                    <div class="developer-card">
+                        <div class="developer-avatar">
+                            <i class="fas fa-user-circle"></i>
+                            <div class="avatar-glow"></div>
+                        </div>
+                        <div class="developer-info">
+                            <h3>Bennet Nkolele</h3>
+                            <p class="developer-title">Full Stack Developer & Tech Enthusiast</p>
+                            <p class="developer-description">
+                                Passionate about creating amazing web applications and tools that make life easier.
+                                Specialized in modern web technologies, Python development, and user experience design.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="contact-links">
+                        <a href="https://react-personal-portfolio-alpha.vercel.app/" target="_blank" class="contact-link portfolio">
+                            <div class="link-icon">
+                                <i class="fas fa-briefcase"></i>
+                            </div>
+                            <div class="link-content">
+                                <h4>Portfolio Website</h4>
+                                <p>View my projects and skills</p>
+                            </div>
+                            <i class="fas fa-external-link-alt"></i>
+                        </a>
+                        <a href="https://www.linkedin.com/in/bennet-nkolele" target="_blank" class="contact-link linkedin">
+                            <div class="link-icon">
+                                <i class="fab fa-linkedin"></i>
+                            </div>
+                            <div class="link-content">
+                                <h4>LinkedIn Profile</h4>
+                                <p>Professional networking</p>
+                            </div>
+                            <i class="fas fa-external-link-alt"></i>
+                        </a>
+                        <a href="https://github.com/Benighter" target="_blank" class="contact-link github">
+                            <div class="link-icon">
+                                <i class="fab fa-github"></i>
+                            </div>
+                            <div class="link-content">
+                                <h4>GitHub Profile</h4>
+                                <p>Open source projects</p>
+                            </div>
+                            <i class="fas fa-external-link-alt"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Footer -->
         <footer class="footer">
-            <p>
-                <i class="fas fa-heart text-red"></i> 
-                Built with yt-dlp • Supports 1000+ websites • 
-                <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">
-                    <i class="fab fa-github"></i> GitHub
-                </a>
-            </p>
+            <div class="footer-content">
+                <div class="footer-main">
+                    <div class="footer-logo">
+                        <i class="fab fa-youtube"></i>
+                        <span>YouTube Downloader Pro</span>
+                    </div>
+                    <p class="footer-description">
+                        <i class="fas fa-heart"></i>
+                        Built with yt-dlp • Supports 1000+ websites
+                    </p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-section">
+                        <h4>Developer</h4>
+                        <a href="https://react-personal-portfolio-alpha.vercel.app/" target="_blank">
+                            <i class="fas fa-briefcase"></i> Portfolio
+                        </a>
+                        <a href="https://www.linkedin.com/in/bennet-nkolele" target="_blank">
+                            <i class="fab fa-linkedin"></i> LinkedIn
+                        </a>
+                        <a href="https://github.com/Benighter" target="_blank">
+                            <i class="fab fa-github"></i> GitHub
+                        </a>
+                    </div>
+                    <div class="footer-section">
+                        <h4>Resources</h4>
+                        <a href="https://github.com/yt-dlp/yt-dlp" target="_blank">
+                            <i class="fab fa-github"></i> yt-dlp Project
+                        </a>
+                        <a href="#about" class="nav-footer-link" data-section="about">
+                            <i class="fas fa-info-circle"></i> About
+                        </a>
+                        <a href="#contact" class="nav-footer-link" data-section="contact">
+                            <i class="fas fa-user"></i> Contact
+                        </a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2025 YouTube Downloader Pro. Made with <i class="fas fa-heart"></i> by Bennet Nkolele</p>
+            </div>
         </footer>
     </div>
 

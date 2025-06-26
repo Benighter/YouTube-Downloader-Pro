@@ -926,15 +926,218 @@ class YouTubeDownloader {
     }
 }
 
+// Navigation functionality
+class Navigation {
+    constructor() {
+        this.currentSection = 'home';
+        this.init();
+    }
+
+    init() {
+        // Get navigation elements
+        this.navLinks = document.querySelectorAll('.nav-link, .nav-footer-link');
+        this.sections = {
+            home: document.querySelector('.main-content'),
+            about: document.getElementById('about'),
+            contact: document.getElementById('contact')
+        };
+
+        // Bind events
+        this.bindEvents();
+
+        // Show home section by default
+        this.showSection('home');
+    }
+
+    bindEvents() {
+        this.navLinks.forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const section = link.getAttribute('data-section');
+                if (section) {
+                    this.showSection(section);
+                }
+            });
+        });
+
+        // Handle browser back/forward
+        window.addEventListener('popstate', (e) => {
+            const section = e.state?.section || 'home';
+            this.showSection(section, false);
+        });
+    }
+
+    showSection(sectionName, updateHistory = true) {
+        // Hide all sections
+        Object.values(this.sections).forEach(section => {
+            if (section) {
+                section.style.display = 'none';
+            }
+        });
+
+        // Show target section
+        if (this.sections[sectionName]) {
+            this.sections[sectionName].style.display = 'block';
+
+            // Add entrance animation
+            this.sections[sectionName].style.animation = 'sectionSlideIn 0.8s ease-out';
+        }
+
+        // Update active nav link
+        this.navLinks.forEach(link => {
+            link.classList.remove('active');
+            if (link.getAttribute('data-section') === sectionName) {
+                link.classList.add('active');
+            }
+        });
+
+        // Update browser history
+        if (updateHistory) {
+            const url = sectionName === 'home' ? '/' : `/#${sectionName}`;
+            history.pushState({ section: sectionName }, '', url);
+        }
+
+        this.currentSection = sectionName;
+    }
+}
+
+// Enhanced animations and interactions
+class AnimationController {
+    constructor() {
+        this.init();
+    }
+
+    init() {
+        this.addScrollAnimations();
+        this.addHoverEffects();
+        this.addRippleEffects();
+        this.addParallaxEffect();
+    }
+
+    addScrollAnimations() {
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.animation = 'sectionSlideIn 0.8s ease-out';
+                }
+            });
+        }, observerOptions);
+
+        // Observe sections
+        document.querySelectorAll('.url-section, .about-section, .contact-section').forEach(section => {
+            observer.observe(section);
+        });
+    }
+
+    addHoverEffects() {
+        // Add hover effects to cards
+        document.querySelectorAll('.about-card, .contact-link').forEach(card => {
+            card.addEventListener('mouseenter', () => {
+                card.style.transform = 'translateY(-10px) scale(1.02)';
+            });
+
+            card.addEventListener('mouseleave', () => {
+                card.style.transform = 'translateY(0) scale(1)';
+            });
+        });
+    }
+
+    addRippleEffects() {
+        // Add ripple effect to buttons
+        document.querySelectorAll('.analyze-btn, .contact-link').forEach(button => {
+            button.addEventListener('click', (e) => {
+                const ripple = document.createElement('div');
+                const rect = button.getBoundingClientRect();
+                const size = Math.max(rect.width, rect.height);
+                const x = e.clientX - rect.left - size / 2;
+                const y = e.clientY - rect.top - size / 2;
+
+                ripple.style.cssText = `
+                    position: absolute;
+                    width: ${size}px;
+                    height: ${size}px;
+                    left: ${x}px;
+                    top: ${y}px;
+                    background: rgba(255, 255, 255, 0.3);
+                    border-radius: 50%;
+                    transform: scale(0);
+                    animation: ripple 0.6s linear;
+                    pointer-events: none;
+                `;
+
+                button.style.position = 'relative';
+                button.style.overflow = 'hidden';
+                button.appendChild(ripple);
+
+                setTimeout(() => {
+                    ripple.remove();
+                }, 600);
+            });
+        });
+    }
+
+    addParallaxEffect() {
+        // Add subtle parallax to floating shapes
+        window.addEventListener('mousemove', (e) => {
+            const shapes = document.querySelectorAll('.shape');
+            const x = e.clientX / window.innerWidth;
+            const y = e.clientY / window.innerHeight;
+
+            shapes.forEach((shape, index) => {
+                const speed = (index + 1) * 0.5;
+                const xPos = (x - 0.5) * speed * 20;
+                const yPos = (y - 0.5) * speed * 20;
+
+                shape.style.transform = `translate(${xPos}px, ${yPos}px)`;
+            });
+        });
+    }
+}
+
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
+    // Initialize main downloader functionality
     new YouTubeDownloader();
-    
-    // Add some nice entrance animations
+
+    // Initialize navigation
+    new Navigation();
+
+    // Initialize animations
+    new AnimationController();
+
+    // Add entrance animations
     setTimeout(() => {
         document.querySelector('.header').style.animation = 'slideInUp 0.8s ease';
         document.querySelector('.url-section').style.animation = 'slideInUp 0.8s ease 0.2s both';
     }, 100);
+
+    // Add CSS animations for ripple effect
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes ripple {
+            to {
+                transform: scale(4);
+                opacity: 0;
+            }
+        }
+
+        @keyframes sectionSlideIn {
+            0% {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    `;
+    document.head.appendChild(style);
 });
 
 // Add some interactive effects
