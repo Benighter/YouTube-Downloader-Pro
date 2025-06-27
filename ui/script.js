@@ -12,6 +12,11 @@ class YouTubeDownloader {
         this.selectedFolderForModal = '';
         this.folderHistory = [];
 
+        // Add these properties to the constructor
+        this.currentVideoInfo = null;
+        this.formatSizes = {};
+        this.currentStorageInfo = null;
+
         this.initializeElements();
         this.bindEvents();
         this.loadSavedFolder();
@@ -91,7 +96,36 @@ class YouTubeDownloader {
             resultsCard: document.getElementById('resultsCard'),
             resultMessage: document.getElementById('resultMessage'),
             downloadAnother: document.getElementById('downloadAnother'),
-            openFolder: document.getElementById('openFolder')
+            openFolder: document.getElementById('openFolder'),
+
+            // Storage elements
+            storageInfoPanel: document.getElementById('storageInfoPanel'),
+            refreshStorageBtn: document.getElementById('refreshStorageBtn'),
+            availableSpace: document.getElementById('availableSpace'),
+            totalSpace: document.getElementById('totalSpace'),
+            storageUsage: document.getElementById('storageUsage'),
+            storageBarFill: document.getElementById('storageBarFill'),
+            viewStorageHistoryBtn: document.getElementById('viewStorageHistoryBtn'),
+            manageStorageBtn: document.getElementById('manageStorageBtn'),
+
+            // Storage History Modal
+            storageHistoryModal: document.getElementById('storageHistoryModal'),
+            closeStorageHistoryModal: document.getElementById('closeStorageHistoryModal'),
+            totalDownloads: document.getElementById('totalDownloads'),
+            totalStorageUsed: document.getElementById('totalStorageUsed'),
+            storageLocationsCount: document.getElementById('storageLocationsCount'),
+            recentDownloadsList: document.getElementById('recentDownloadsList'),
+            storageLocationsList: document.getElementById('storageLocationsList'),
+
+            // Storage Management Modal
+            storageManagementModal: document.getElementById('storageManagementModal'),
+            closeStorageManagementModal: document.getElementById('closeStorageManagementModal'),
+            drivesList: document.getElementById('drivesList'),
+            favoriteLocationsList: document.getElementById('favoriteLocationsList'),
+            newLocationPath: document.getElementById('newLocationPath'),
+            newLocationAlias: document.getElementById('newLocationAlias'),
+            browseNewLocationBtn: document.getElementById('browseNewLocationBtn'),
+            addLocationBtn: document.getElementById('addLocationBtn')
         };
     }
 
@@ -157,6 +191,30 @@ class YouTubeDownloader {
 
         // Auto-resize URL input
         this.elements.videoUrl.addEventListener('input', () => this.validateUrl());
+
+        // Storage events
+        this.elements.refreshStorageBtn?.addEventListener('click', () => this.refreshStorageInfo());
+        this.elements.viewStorageHistoryBtn?.addEventListener('click', () => this.openStorageHistory());
+        this.elements.manageStorageBtn?.addEventListener('click', () => this.openStorageManagement());
+
+        // Storage modal events
+        this.elements.closeStorageHistoryModal?.addEventListener('click', () => this.closeStorageHistory());
+        this.elements.closeStorageManagementModal?.addEventListener('click', () => this.closeStorageManagement());
+        this.elements.addLocationBtn?.addEventListener('click', () => this.addStorageLocation());
+        this.elements.browseNewLocationBtn?.addEventListener('click', () => this.browseNewLocation());
+
+        // Close storage modals when clicking outside
+        this.elements.storageHistoryModal?.addEventListener('click', (e) => {
+            if (e.target === this.elements.storageHistoryModal) {
+                this.closeStorageHistory();
+            }
+        });
+
+        this.elements.storageManagementModal?.addEventListener('click', (e) => {
+            if (e.target === this.elements.storageManagementModal) {
+                this.closeStorageManagement();
+            }
+        });
     }
 
     validateUrl() {
@@ -183,57 +241,152 @@ class YouTubeDownloader {
 
     async analyzeVideo() {
         const url = this.elements.videoUrl.value.trim();
-        if (!this.isValidUrl(url)) {
-            this.showError('Please enter a valid URL');
+        if (!url) {
+            this.showError('Please enter a YouTube URL');
             return;
         }
 
         this.currentUrl = url;
-        this.showLoading(true);
+        this.showLoading('Analyzing video...');
 
         try {
-            // Call backend API to analyze video
             const response = await fetch('/api/analyze', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
+                    'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ url: url })
+                body: JSON.stringify({ url })
             });
 
             const data = await response.json();
 
             if (data.success) {
                 if (data.is_playlist) {
-                    // Handle playlist
-                    this.showPlaylistInfo({
-                        title: data.playlist_info.title,
-                        uploader: data.playlist_info.uploader,
-                        videoCount: data.playlist_info.video_count,
-                        thumbnail: data.playlist_info.thumbnail || "https://via.placeholder.com/200x112/667eea/ffffff?text=Playlist+Thumbnail"
-                    });
-                    this.showDownloadOptions(true); // true indicates playlist mode
+                    this.currentPlaylistInfo = data.playlist_info;
+                    this.showPlaylistInfo(data.playlist_info);
                 } else {
-                    // Handle single video
-                    this.showVideoInfo({
-                        title: data.info.title,
-                        channel: data.info.channel,
-                        views: data.info.view_count + ' views',
-                        date: data.info.upload_date,
-                        duration: data.info.duration,
-                        thumbnail: data.info.thumbnail || "https://via.placeholder.com/200x112/667eea/ffffff?text=Video+Thumbnail"
-                    });
-                    this.showDownloadOptions(false); // false indicates single video mode
+                    this.currentVideoInfo = data.info;
+                    this.showVideoInfo(data.info);
                 }
+                
+                this.hideLoading();
+                this.showDownloadOptions();
+                
+                // Automatically analyze formats and get storage info
+                this.analyzeFormatsAndStorage();
             } else {
+                this.hideLoading();
                 this.showError(data.error || 'Failed to analyze video');
             }
-
         } catch (error) {
+            this.hideLoading();
+            this.showError('Network error. Please check your connection and try again.');
             console.error('Analysis error:', error);
-            this.showError('Failed to analyze video. Please check the URL and try again.');
-        } finally {
-            this.showLoading(false);
+        }
+    }
+
+    async analyzeFormatsAndStorage() {
+        try {
+            // Get current download path
+            const downloadPath = this.selectedFolder || '';
+            
+            const response = await fetch('/api/analyze-formats', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ 
+                    url: this.currentUrl,
+                    download_path: downloadPath
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                // Store format sizes
+                this.formatSizes = {};
+                data.formats.forEach(format => {
+                    this.formatSizes[format.selector] = {
+                        size_bytes: format.size_bytes,
+                        size_display: format.size_display,
+                        confidence: format.confidence,
+                        estimated: format.estimated
+                    };
+                });
+
+                // Store storage info
+                this.currentStorageInfo = data.storage_info;
+
+                // Update format buttons with size information
+                this.updateFormatButtonsWithSizes();
+                
+                // Show storage information
+                this.showStorageInfo();
+            }
+        } catch (error) {
+            console.error('Error analyzing formats:', error);
+        }
+    }
+
+    updateFormatButtonsWithSizes() {
+        this.elements.presetBtns.forEach(btn => {
+            const formatSelector = btn.dataset.format;
+            const sizeInfo = this.formatSizes[formatSelector];
+            
+            if (sizeInfo) {
+                // Find or create size display element
+                let sizeElement = btn.querySelector('.format-size');
+                if (!sizeElement) {
+                    sizeElement = document.createElement('small');
+                    sizeElement.className = 'format-size';
+                    btn.appendChild(sizeElement);
+                }
+                
+                // Update size display with confidence indicator
+                const confidenceIcon = sizeInfo.confidence === 'high' ? '✓' : 
+                                      sizeInfo.confidence === 'medium' ? '~' : '?';
+                sizeElement.textContent = `${confidenceIcon} ${sizeInfo.size_display}`;
+                sizeElement.className = `format-size confidence-${sizeInfo.confidence}`;
+                
+                // Add tooltip for estimated sizes
+                if (sizeInfo.estimated) {
+                    btn.title = `Estimated size: ${sizeInfo.size_display}`;
+                }
+            }
+        });
+    }
+
+    showStorageInfo() {
+        if (!this.currentStorageInfo) return;
+
+        const storagePanel = this.elements.storageInfoPanel;
+        if (storagePanel) {
+            storagePanel.style.display = 'block';
+            
+            // Update storage display elements
+            if (this.elements.availableSpace) {
+                this.elements.availableSpace.textContent = this.currentStorageInfo.free_formatted;
+            }
+            if (this.elements.totalSpace) {
+                this.elements.totalSpace.textContent = this.currentStorageInfo.total_formatted;
+            }
+            if (this.elements.storageUsage) {
+                const usagePercent = this.currentStorageInfo.usage_percent || this.currentStorageInfo.percent;
+                if (usagePercent !== undefined && usagePercent !== null) {
+                    this.elements.storageUsage.textContent = `${usagePercent.toFixed(1)}% used`;
+                } else {
+                    this.elements.storageUsage.textContent = 'Unknown usage';
+                }
+            }
+            if (this.elements.storageBarFill) {
+                const usagePercent = this.currentStorageInfo.usage_percent || this.currentStorageInfo.percent;
+                if (usagePercent !== undefined && usagePercent !== null) {
+                    this.elements.storageBarFill.style.width = `${usagePercent}%`;
+                } else {
+                    this.elements.storageBarFill.style.width = '0%';
+                }
+            }
         }
     }
 
@@ -248,15 +401,51 @@ class YouTubeDownloader {
         this.elements.videoChannel.textContent = info.channel;
         this.elements.videoViews.innerHTML = `<i class="fas fa-eye"></i> ${info.views}`;
         this.elements.videoDate.innerHTML = `<i class="fas fa-calendar"></i> ${info.date}`;
-        // Enhanced size display with refresh option
+        
+        // Enhanced size display with confidence indicators and method info
         const sizeText = info.estimated_size_formatted || 'Size unknown';
-        const refreshButton = info.estimated_size && info.estimated_size > 0 ?
-            '' : '<button class="size-refresh-btn" onclick="app.refreshVideoSize()" title="Refresh size estimate"><i class="fas fa-sync-alt"></i></button>';
+        const sizeValue = info.estimated_size || 0;
+        const sizeMethod = info.size_method || 'unknown';
+        const sizeConfidence = info.size_confidence || 'unknown';
+        
+        // Always show refresh button for better user control
+        const refreshButton = '<button class="size-refresh-btn" onclick="app.refreshVideoSize()" title="Refresh size estimate"><i class="fas fa-sync-alt"></i></button>';
+        
+        // Add size confidence indicator with better logic
+        let confidenceIndicator = '';
+        let confidenceClass = '';
+        let confidenceTitle = '';
+        
+        if (sizeValue > 0) {
+            switch(sizeConfidence) {
+                case 'high':
+                    confidenceClass = 'high';
+                    confidenceTitle = `Exact size detected (${sizeMethod})`;
+                    break;
+                case 'medium':
+                    confidenceClass = 'medium';
+                    confidenceTitle = `Good size estimate (${sizeMethod})`;
+                    break;
+                case 'low':
+                    confidenceClass = 'low';
+                    confidenceTitle = `Rough size estimate (${sizeMethod})`;
+                    break;
+                default:
+                    confidenceClass = 'unknown';
+                    confidenceTitle = 'Size estimation method unknown';
+            }
+        } else {
+            confidenceClass = 'unknown';
+            confidenceTitle = 'Size could not be determined';
+        }
+        
+        confidenceIndicator = `<span class="size-confidence ${confidenceClass}" title="${confidenceTitle}">●</span>`;
 
-        this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${sizeText} ${refreshButton}`;
+        this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${sizeText} ${confidenceIndicator} ${refreshButton}`;
 
-        // Store current URL for size refresh
+        // Store current URL and video info for size refresh
         this.currentVideoUrl = this.elements.videoUrl.value.trim();
+        this.currentVideoInfo = info;
         this.elements.duration.textContent = info.duration;
 
         // Hide playlist info and show video info
@@ -266,11 +455,11 @@ class YouTubeDownloader {
     }
 
     showPlaylistInfo(info) {
-        this.elements.playlistThumbnail.src = info.thumbnail;
-        this.elements.playlistTitle.textContent = info.title;
-        this.elements.playlistUploader.textContent = info.uploader;
+        this.elements.playlistThumbnail.src = info.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'320\' height=\'180\'%3E%3Crect width=\'100%25\' height=\'100%25\' fill=\'%23f1f5f9\'/%3E%3C/svg%3E';
+        this.elements.playlistTitle.textContent = info.title || 'Unknown Playlist';
+        this.elements.playlistUploader.textContent = info.uploader || 'Unknown';
         this.elements.playlistSize.innerHTML = `<i class="fas fa-hdd"></i> ${info.estimated_total_size_formatted || 'Calculating size...'}`;
-        this.elements.videoCount.textContent = `${info.videoCount} videos`;
+        this.elements.videoCount.textContent = `${info.video_count || 0} videos`;
 
         // Hide video info and show playlist info
         this.elements.videoInfo.style.display = 'none';
@@ -305,15 +494,41 @@ class YouTubeDownloader {
             const data = await response.json();
 
             if (data.success && !data.is_playlist) {
-                // Update only the size information
-                const sizeText = data.info.estimated_size_formatted || 'Size unknown';
-                const refreshButton = data.info.estimated_size && data.info.estimated_size > 0 ?
-                    '' : '<button class="size-refresh-btn" onclick="app.refreshVideoSize()" title="Refresh size estimate"><i class="fas fa-sync-alt"></i></button>';
+                // Update size information with enhanced display
+                const info = data.info;
+                const sizeText = info.estimated_size_formatted || 'Size unknown';
+                const sizeValue = info.estimated_size || 0;
+                
+                // Always show refresh button
+                const refreshButton = '<button class="size-refresh-btn" onclick="app.refreshVideoSize()" title="Refresh size estimate"><i class="fas fa-sync-alt"></i></button>';
+                
+                // Add confidence indicator
+                let confidenceIndicator = '';
+                if (sizeValue > 0) {
+                    if (info.size_sources) {
+                        if (info.size_sources.filesize > 0) {
+                            confidenceIndicator = '<span class="size-confidence high" title="Exact size from source">●</span>';
+                        } else if (info.size_sources.filesize_approx > 0) {
+                            confidenceIndicator = '<span class="size-confidence medium" title="Approximate size from source">●</span>';
+                        } else {
+                            confidenceIndicator = '<span class="size-confidence low" title="Estimated size">●</span>';
+                        }
+                    }
+                } else {
+                    confidenceIndicator = '<span class="size-confidence unknown" title="Size unknown">●</span>';
+                }
 
-                this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${sizeText} ${refreshButton}`;
+                this.elements.videoSize.innerHTML = `<i class="fas fa-hdd"></i> ${sizeText} ${confidenceIndicator} ${refreshButton}`;
+
+                // Update stored info
+                this.currentVideoInfo = info;
 
                 // Show success feedback
-                this.showNotification('Video size refreshed successfully!', 'success');
+                if (sizeValue > 0) {
+                    this.showNotification(`Video size refreshed: ${sizeText}`, 'success');
+                } else {
+                    this.showNotification('Size could not be determined accurately', 'warning');
+                }
             } else {
                 throw new Error(data.error || 'Failed to refresh video size');
             }
@@ -333,6 +548,11 @@ class YouTubeDownloader {
         this.elements.downloadOptions.style.display = 'block';
         this.elements.downloadOptions.classList.add('fade-in');
         this.elements.downloadBtn.disabled = false;
+
+        // Show storage info panel automatically
+        if (this.elements.storageInfoPanel) {
+            this.elements.storageInfoPanel.style.display = 'block';
+        }
 
         // Initialize playlist download type selection if it's a playlist
         if (isPlaylist) {
@@ -375,12 +595,86 @@ class YouTubeDownloader {
         this.selectedFormat = btn.dataset.format;
         this.selectedType = btn.dataset.type;
         
+        // Show storage requirement for selected format
+        this.showSelectedFormatStorage();
+        
         // Enable download button
         this.elements.downloadBtn.disabled = false;
         
         // Update download button text
         const formatText = btn.querySelector('span').textContent;
         this.elements.downloadBtn.innerHTML = `<i class="fas fa-download"></i> Download ${formatText}`;
+    }
+
+    showSelectedFormatStorage() {
+        if (!this.formatSizes || !this.selectedFormat) return;
+
+        const formatSize = this.formatSizes[this.selectedFormat];
+        if (!formatSize) return;
+
+        // Create or update selected format info
+        let selectedFormatInfo = document.querySelector('.selected-format-info');
+        if (!selectedFormatInfo) {
+            selectedFormatInfo = document.createElement('div');
+            selectedFormatInfo.className = 'selected-format-info';
+            
+            // Insert after quality presets
+            const qualityPresets = document.querySelector('.quality-presets');
+            if (qualityPresets) {
+                qualityPresets.parentNode.insertBefore(selectedFormatInfo, qualityPresets.nextSibling);
+            }
+        }
+
+        let content = `<div class="format-info-header">
+            <h4><i class="fas fa-info-circle"></i> Selected Format</h4>
+        </div>
+        <div class="format-details">
+            <div class="format-item">
+                <span class="format-label">Format:</span>
+                <span class="format-value">${this.selectedFormat}</span>
+            </div>
+            <div class="format-item">
+                <span class="format-label">Expected Size:</span>
+                <span class="format-value ${formatSize.confidence === 'high' ? 'high-confidence' : formatSize.confidence === 'medium' ? 'medium-confidence' : 'low-confidence'}">
+                    ${formatSize.size_display}
+                    ${formatSize.estimated ? ' (estimated)' : ''}
+                </span>
+            </div>
+        </div>`;
+
+        // Add storage check if available
+        if (this.currentStorageInfo && formatSize.size_bytes > 0) {
+            const availableSpace = this.currentStorageInfo.free_space;
+            const requiredSpace = formatSize.size_bytes;
+            const spaceAfterDownload = availableSpace - requiredSpace;
+            
+            if (spaceAfterDownload < 0) {
+                content += `<div class="storage-warning error">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    Insufficient disk space! Need ${formatSize.size_display}, only ${this.currentStorageInfo.free_formatted} available.
+                </div>`;
+            } else if (spaceAfterDownload < 1024 * 1024 * 100) { // Less than 100MB remaining
+                content += `<div class="storage-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    Low disk space after download (${this.formatFileSize(spaceAfterDownload)} remaining).
+                </div>`;
+            } else {
+                content += `<div class="storage-info">
+                    <i class="fas fa-check-circle"></i>
+                    Space after download: ${this.formatFileSize(spaceAfterDownload)}
+                </div>`;
+            }
+        }
+
+        selectedFormatInfo.innerHTML = content;
+    }
+
+    formatFileSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
 
     toggleAdvancedOptions() {
@@ -419,6 +713,9 @@ class YouTubeDownloader {
 
             // Show success feedback
             this.showFolderSelectionSuccess(path);
+            
+            // Refresh storage information for the new folder
+            this.refreshStorageForCurrentFolder();
         } else {
             alert('Please enter a valid folder path');
         }
@@ -431,6 +728,9 @@ class YouTubeDownloader {
         this.elements.folderPathInput.style.display = 'none';
         // Remove saved preference
         localStorage.removeItem('ytdl_selected_folder');
+        
+        // Refresh storage information for the default folder
+        this.refreshStorageForCurrentFolder();
     }
 
     updateFolderDisplay(isSelected) {
@@ -489,13 +789,6 @@ class YouTubeDownloader {
     async startDownload() {
         if (this.isDownloading) return;
 
-        // Check if folder is selected
-        if (!this.selectedFolder || this.selectedFolder.trim() === '') {
-            this.showError('Please select a download folder first!');
-            this.openFolderBrowser();
-            return;
-        }
-
         this.isDownloading = true;
         this.hideAllSections();
         this.elements.progressSection.style.display = 'block';
@@ -516,22 +809,187 @@ class YouTubeDownloader {
             const isPlaylist = this.elements.playlistInfo.style.display !== 'none';
             const downloadType = this.selectedDownloadType || 'individual';
 
-            // Choose the appropriate API endpoint
-            const endpoint = isPlaylist ? '/api/download-playlist' : '/api/download';
+            if (isPlaylist) {
+                // Handle playlist downloads (will implement in next step)
+                await this.startPlaylistDownload(format, options, downloadType);
+            } else {
+                // Handle single video download with browser-native download
+                await this.startBrowserDownload(format, options);
+            }
+
+        } catch (error) {
+            console.error('Download error:', error);
+            this.showError('Download failed. Please try again.');
+        } finally {
+            this.isDownloading = false;
+        }
+    }
+
+    async startBrowserDownload(format, options) {
+        try {
+            // Show preparing message
+            this.updateProgressDisplay({
+                status: 'preparing',
+                progress: 0,
+                message: 'Preparing download...'
+            });
+
+            // Create request body
+            const requestBody = {
+                url: this.currentUrl,
+                format: format,
+                options: options
+            };
+
+            // Update UI to show download starting
+            this.updateProgressDisplay({
+                status: 'downloading',
+                progress: 0,
+                message: 'Starting download... Check your browser\'s download manager for progress.'
+            });
+
+            // Make fetch request to streaming endpoint
+            const response = await fetch('/api/stream-download', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Download failed');
+            }
+
+            // Get the JSON response with download info
+            const downloadData = await response.json();
+
+            if (!downloadData.success) {
+                throw new Error(downloadData.error || 'Download failed');
+            }
+
+            // Create download link using the direct URL
+            const a = document.createElement('a');
+            a.href = downloadData.download_url;
+            a.download = downloadData.filename;
+            a.style.display = 'none';
+
+            document.body.appendChild(a);
+            a.click();
+
+            // Clean up
+            setTimeout(() => {
+                document.body.removeChild(a);
+            }, 1000);
+
+            // Show success message
+            this.showBrowserDownloadSuccess();
+
+        } catch (error) {
+            throw new Error(`Browser download failed: ${error.message}`);
+        }
+    }
+
+    async startPlaylistDownload(format, options, downloadType) {
+        try {
+            // Show preparing message
+            this.updateProgressDisplay({
+                status: 'preparing',
+                progress: 0,
+                message: 'Preparing playlist download...'
+            });
+
+            // Create request body
             const requestBody = {
                 url: this.currentUrl,
                 format: format,
                 options: options,
+                download_type: downloadType
+            };
+
+            // Update UI to show download starting
+            this.updateProgressDisplay({
+                status: 'downloading',
+                progress: 0,
+                message: 'Downloading playlist... This may take a while. Check your browser\'s download manager for progress.'
+            });
+
+            // Make fetch request to streaming playlist endpoint
+            const response = await fetch('/api/stream-playlist-download', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            // Parse JSON response
+            const responseData = await response.json();
+
+            if (!response.ok) {
+                throw new Error(responseData.error || 'Playlist download failed');
+            }
+
+            // Check if it recommends server download
+            if (responseData.recommend_server_download) {
+                // Show message recommending server download
+                this.updateProgressDisplay({
+                    status: 'info',
+                    progress: 0,
+                    message: responseData.message || 'Browser download not recommended for playlists'
+                });
+
+                // Ask user if they want to use server download instead
+                const useServerDownload = confirm(
+                    `${responseData.message}\n\nWould you like to use server download instead? This will download to your selected folder.`
+                );
+
+                if (useServerDownload) {
+                    // Switch to server download
+                    await this.startServerPlaylistDownload(format, options, downloadType);
+                    return;
+                } else {
+                    // User chose to continue with browser download, but warn them
+                    this.updateProgressDisplay({
+                        status: 'warning',
+                        progress: 0,
+                        message: `Proceeding with browser download of ${responseData.video_count} videos. This may take a very long time.`
+                    });
+                    
+                    // For now, show a message that browser playlist download is not fully implemented
+                    setTimeout(() => {
+                        this.showError('Browser playlist download is not yet fully implemented. Please use server download for playlists.');
+                    }, 2000);
+                    return;
+                }
+            }
+
+            // If we get here, it means the server sent a file blob (not currently implemented)
+            // This would be for when we implement actual playlist ZIP streaming
+            this.showBrowserDownloadSuccess();
+
+        } catch (error) {
+            throw new Error(`Playlist download failed: ${error.message}`);
+        }
+    }
+
+    async startServerPlaylistDownload(format, options, downloadType) {
+        try {
+            // Show progress section
+            this.elements.progressSection.style.display = 'block';
+
+            // Create request body
+            const requestBody = {
+                url: this.currentUrl,
+                format: format,
+                options: options,
+                download_type: downloadType,
                 folder: this.selectedFolder
             };
 
-            // Add playlist-specific options
-            if (isPlaylist) {
-                requestBody.download_type = downloadType;
-            }
-
-            // Start download via API
-            const response = await fetch(endpoint, {
+            // Make fetch request to server playlist download endpoint
+            const response = await fetch('/api/download-playlist', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -541,21 +999,40 @@ class YouTubeDownloader {
 
             const data = await response.json();
 
-            if (data.success) {
-                // Store download ID for pause/stop functionality
-                this.currentDownloadId = data.download_id;
-
-                // Monitor download progress
-                await this.monitorDownload(data.download_id);
-            } else {
-                this.showError(data.error || 'Failed to start download');
+            if (!response.ok) {
+                throw new Error(data.error || 'Playlist download failed');
             }
+
+            if (data.success && data.download_id) {
+                // Start monitoring download progress
+                this.isDownloading = true;
+                this.monitorDownload(data.download_id);
+            } else {
+                throw new Error('Failed to start playlist download');
+            }
+
         } catch (error) {
-            console.error('Download error:', error);
-            this.showError('Download failed. Please try again.');
-        } finally {
-            this.isDownloading = false;
+            this.showError(`Playlist download failed: ${error.message}`);
+            this.hideProgressSection();
         }
+    }
+
+    showBrowserDownloadSuccess() {
+        this.hideAllSections();
+        this.elements.resultsSection.style.display = 'block';
+        this.elements.resultsCard.className = 'results-card success';
+
+        // Update result content
+        this.elements.resultsCard.querySelector('.result-icon').innerHTML = '<i class="fas fa-check-circle"></i>';
+        this.elements.resultsCard.querySelector('h3').textContent = 'Download Started!';
+        this.elements.resultsCard.querySelector('p').innerHTML =
+            'Your download has been started and should appear in your browser\'s download manager.<br>' +
+            'You can monitor the progress using your browser\'s built-in download progress bar.';
+
+        // Reset interface after showing success
+        setTimeout(() => {
+            this.resetInterface();
+        }, 5000);
     }
 
     async pauseDownload() {
@@ -710,8 +1187,57 @@ class YouTubeDownloader {
         this.elements.downloadSize.textContent = `Size: ${size}`;
         this.elements.timeRemaining.textContent = `ETA: ${eta}`;
 
+        // Update storage information during download
+        this.updateStorageDisplayDuringDownload(progress);
+
         // Add visual feedback for different states
         this.updateProgressBarState(progress.status, progressValue);
+    }
+
+    updateStorageDisplayDuringDownload(progress) {
+        // Show storage info for the selected format
+        if (this.formatSizes && this.selectedFormat) {
+            const formatSize = this.formatSizes[this.selectedFormat];
+            if (formatSize) {
+                // Create or update download storage info section
+                let storageDownloadInfo = document.querySelector('.download-storage-info');
+                if (!storageDownloadInfo) {
+                    storageDownloadInfo = document.createElement('div');
+                    storageDownloadInfo.className = 'download-storage-info';
+                    
+                    // Insert after progress info
+                    const progressInfo = document.querySelector('.progress-info');
+                    if (progressInfo) {
+                        progressInfo.parentNode.insertBefore(storageDownloadInfo, progressInfo.nextSibling);
+                    }
+                }
+
+                // Update storage info content
+                let content = `<div class="storage-item">
+                    <span class="storage-label">Expected Size:</span>
+                    <span class="storage-value">${formatSize.size_display}</span>
+                </div>`;
+
+                // Add remaining space info if available from progress
+                if (progress.storage_info) {
+                    const remainingSpace = progress.storage_info.remaining_space_formatted || 'Calculating...';
+                    content += `<div class="storage-item">
+                        <span class="storage-label">Space After Download:</span>
+                        <span class="storage-value">${remainingSpace}</span>
+                    </div>`;
+
+                    // Warn if running low on space
+                    if (progress.storage_info.remaining_space < 1024 * 1024 * 100) { // Less than 100MB
+                        content += `<div class="storage-warning">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            Low disk space remaining!
+                        </div>`;
+                    }
+                }
+
+                storageDownloadInfo.innerHTML = content;
+            }
+        }
     }
 
     animateProgressBar(targetProgress) {
@@ -777,6 +1303,13 @@ class YouTubeDownloader {
         this.elements.resultsCard.querySelector('.result-icon').innerHTML = '<i class="fas fa-exclamation-circle"></i>';
         this.elements.resultsCard.querySelector('h3').textContent = 'Download Failed';
         this.elements.resultMessage.textContent = message;
+    }
+
+    hideProgressSection() {
+        if (this.elements.progressSection) {
+            this.elements.progressSection.style.display = 'none';
+        }
+        this.isDownloading = false;
     }
 
     showNotification(message, type = 'info') {
@@ -889,8 +1422,26 @@ class YouTubeDownloader {
         }, 3000);
     }
 
-    showLoading(show) {
-        this.elements.loadingOverlay.style.display = show ? 'flex' : 'none';
+    showLoading(message = 'Analyzing video...') {
+        if (this.elements && this.elements.loadingOverlay) {
+            this.elements.loadingOverlay.style.display = 'flex';
+            
+            // Update loading message
+            const loadingMessage = this.elements.loadingOverlay.querySelector('p');
+            if (loadingMessage) {
+                loadingMessage.textContent = message;
+            }
+        } else {
+            console.error('loadingOverlay element not found or elements not initialized');
+        }
+    }
+
+    hideLoading() {
+        if (this.elements && this.elements.loadingOverlay) {
+            this.elements.loadingOverlay.style.display = 'none';
+        } else {
+            console.error('loadingOverlay element not found or elements not initialized');
+        }
     }
 
     // Folder Browser Methods
@@ -1149,6 +1700,9 @@ class YouTubeDownloader {
             this.saveFolderPreference(this.selectedFolderForModal);
             this.showFolderSelectionSuccess(this.selectedFolderForModal);
             this.closeFolderBrowser();
+            
+            // Refresh storage information for the new folder
+            this.refreshStorageForCurrentFolder();
         }
     }
 
@@ -1210,47 +1764,482 @@ class YouTubeDownloader {
         `;
     }
 
-    showTemporaryMessage(message, type = 'info') {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `temp-message temp-message-${type}`;
-        messageDiv.innerHTML = `
-            <i class="fas fa-${type === 'success' ? 'check-circle' : 'info-circle'}"></i>
-            <span>${message}</span>
-        `;
+    // Storage Management Methods
+    async loadDefaultFolderInfo() {
+        try {
+            const response = await fetch('/api/default-folder');
+            const data = await response.json();
 
-        const colors = {
-            success: '#2ed573',
-            error: '#ff4757',
-            info: '#667eea'
+            if (data.success && data.storage_info) {
+                this.updateStorageInfo(data.storage_info);
+                this.showStoragePanel();
+            }
+        } catch (error) {
+            console.error('Error loading default folder info:', error);
+        }
+    }
+
+    updateStorageInfo(storageInfo) {
+        if (!this.elements.availableSpace) return;
+
+        // Handle both old and new property names for compatibility
+        const freeSpace = storageInfo.free_space || storageInfo.free;
+        const totalSpace = storageInfo.total_space || storageInfo.total;
+        const usagePercent = storageInfo.usage_percent || storageInfo.percent;
+
+        // Use formatted values if available, otherwise format the raw values
+        this.elements.availableSpace.textContent = storageInfo.free_formatted || formatFileSize(freeSpace);
+        this.elements.totalSpace.textContent = storageInfo.total_formatted || formatFileSize(totalSpace);
+
+        // Ensure usagePercent is defined before calling toFixed
+        if (usagePercent !== undefined && usagePercent !== null) {
+            this.elements.storageUsage.textContent = `${usagePercent.toFixed(1)}%`;
+
+            // Update storage bar
+            this.elements.storageBarFill.style.width = `${usagePercent}%`;
+
+            // Update bar color based on usage
+            if (usagePercent < 70) {
+                this.elements.storageBarFill.style.background = 'linear-gradient(90deg, #4ade80, #22c55e)';
+            } else if (usagePercent < 90) {
+                this.elements.storageBarFill.style.background = 'linear-gradient(90deg, #fbbf24, #f59e0b)';
+            } else {
+                this.elements.storageBarFill.style.background = 'linear-gradient(90deg, #ef4444, #dc2626)';
+            }
+        } else {
+            // Fallback if percentage is not available
+            this.elements.storageUsage.textContent = 'Unknown';
+            this.elements.storageBarFill.style.width = '0%';
+            this.elements.storageBarFill.style.background = 'linear-gradient(90deg, #cbd5e1, #94a3b8)';
+        }
+    }
+
+    showStoragePanel() {
+        if (this.elements.storageInfoPanel) {
+            this.elements.storageInfoPanel.style.display = 'block';
+        }
+    }
+
+    async refreshStorageInfo() {
+        try {
+            // Show loading state
+            if (this.elements.refreshStorageBtn) {
+                this.elements.refreshStorageBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            }
+
+            // Use the new refreshStorageForCurrentFolder method
+            await this.refreshStorageForCurrentFolder();
+            
+        } catch (error) {
+            console.error('Error refreshing storage info:', error);
+            this.showError('Failed to refresh storage information');
+        } finally {
+            // Restore button
+            if (this.elements.refreshStorageBtn) {
+                this.elements.refreshStorageBtn.innerHTML = '<i class="fas fa-sync-alt"></i>';
+            }
+        }
+    }
+
+    async openStorageHistory() {
+        if (!this.elements.storageHistoryModal) return;
+
+        this.elements.storageHistoryModal.style.display = 'flex';
+        
+        try {
+            const response = await fetch('/api/storage-analytics');
+            const data = await response.json();
+
+            if (data.success) {
+                this.updateStorageAnalytics(data.analytics);
+                this.updateDrivesList(data.drives);
+            }
+        } catch (error) {
+            console.error('Error loading storage analytics:', error);
+        }
+    }
+
+    updateStorageAnalytics(analytics) {
+        if (this.elements.totalDownloads) {
+            this.elements.totalDownloads.textContent = analytics.total_downloads;
+        }
+        if (this.elements.totalStorageUsed) {
+            this.elements.totalStorageUsed.textContent = analytics.total_size_formatted;
+        }
+        if (this.elements.storageLocationsCount) {
+            this.elements.storageLocationsCount.textContent = analytics.by_location.length;
+        }
+
+        // Update recent downloads
+        this.updateRecentDownloads(analytics.recent_downloads);
+        
+        // Update storage by location
+        this.updateStorageByLocation(analytics.by_location);
+    }
+
+    updateRecentDownloads(downloads) {
+        if (!this.elements.recentDownloadsList) return;
+
+        if (downloads.length === 0) {
+            this.elements.recentDownloadsList.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-download"></i>
+                    <h5>No downloads yet</h5>
+                    <p>Your recent downloads will appear here</p>
+                </div>
+            `;
+            return;
+        }
+
+        this.elements.recentDownloadsList.innerHTML = downloads.map(download => `
+            <div class="download-item">
+                <div class="download-info">
+                    <div class="download-title">${escapeHtml(download.title)}</div>
+                    <div class="download-meta">
+                        <span><i class="fas fa-hdd"></i> ${download.size_formatted}</span>
+                        <span><i class="fas fa-calendar"></i> ${formatDate(download.date)}</span>
+                        <span><i class="fas fa-folder"></i> ${escapeHtml(download.location)}</span>
+                    </div>
+                </div>
+                <div class="download-actions">
+                    <button class="action-btn" onclick="app.openFileLocation('${escapeHtml(download.path)}')" title="Open file location">
+                        <i class="fas fa-folder-open"></i>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    updateStorageByLocation(locations) {
+        if (!this.elements.storageLocationsList) return;
+
+        if (locations.length === 0) {
+            this.elements.storageLocationsList.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <h5>No storage locations</h5>
+                    <p>Download files to see storage usage by location</p>
+                </div>
+            `;
+            return;
+        }
+
+        this.elements.storageLocationsList.innerHTML = locations.map(location => `
+            <div class="location-item">
+                <div class="location-info">
+                    <div class="location-path">${escapeHtml(location.location)}</div>
+                    <div class="location-meta">
+                        <span><i class="fas fa-download"></i> ${location.count} downloads</span>
+                        <span><i class="fas fa-hdd"></i> ${location.size_formatted}</span>
+                    </div>
+                </div>
+                <div class="location-actions">
+                    <button class="action-btn" onclick="app.openFileLocation('${escapeHtml(location.location)}')" title="Open location">
+                        <i class="fas fa-folder-open"></i>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    async openStorageManagement() {
+        if (!this.elements.storageManagementModal) return;
+
+        this.elements.storageManagementModal.style.display = 'flex';
+        
+        try {
+            const response = await fetch('/api/storage-info');
+            const data = await response.json();
+
+            if (data.success) {
+                this.updateDrivesList(data.drives);
+                this.loadFavoriteLocations();
+            }
+        } catch (error) {
+            console.error('Error loading storage management:', error);
+        }
+    }
+
+    updateDrivesList(drives) {
+        if (!this.elements.drivesList) return;
+
+        if (drives.length === 0) {
+            this.elements.drivesList.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-hard-drive"></i>
+                    <h5>No drives found</h5>
+                    <p>Unable to detect storage drives</p>
+                </div>
+            `;
+            return;
+        }
+
+        this.elements.drivesList.innerHTML = drives.map(drive => {
+            const usageClass = drive.usage_percent < 70 ? 'low' : drive.usage_percent < 90 ? 'medium' : 'high';
+            
+            return `
+                <div class="drive-item">
+                    <div class="drive-info">
+                        <div class="drive-name">
+                            <i class="fas fa-hard-drive"></i>
+                            ${escapeHtml(drive.path)} (${escapeHtml(drive.fstype)})
+                        </div>
+                        <div class="drive-meta">
+                            <span>${drive.free_formatted} free of ${drive.total_formatted}</span>
+                            <span>${drive.usage_percent ? drive.usage_percent.toFixed(1) : '0'}% used</span>
+                        </div>
+                        <div class="drive-usage">
+                            <div class="drive-usage-bar">
+                                <div class="drive-usage-fill ${usageClass}" style="width: ${drive.usage_percent}%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    async loadFavoriteLocations() {
+        try {
+            const response = await fetch('/api/storage-locations');
+            const data = await response.json();
+
+            if (data.success) {
+                this.updateFavoriteLocations(data.locations);
+            }
+        } catch (error) {
+            console.error('Error loading favorite locations:', error);
+        }
+    }
+
+    updateFavoriteLocations(locations) {
+        if (!this.elements.favoriteLocationsList) return;
+
+        if (locations.length === 0) {
+            this.elements.favoriteLocationsList.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-star"></i>
+                    <h5>No favorite locations</h5>
+                    <p>Add frequently used download locations here</p>
+                </div>
+            `;
+            return;
+        }
+
+        this.elements.favoriteLocationsList.innerHTML = locations.map(location => `
+            <div class="favorite-item">
+                <div class="favorite-info">
+                    <div class="favorite-path">
+                        ${location.is_default ? '<i class="fas fa-star" style="color: #fbbf24;"></i>' : '<i class="fas fa-folder"></i>'}
+                        ${escapeHtml(location.alias || location.path)}
+                    </div>
+                    <div class="favorite-meta">
+                        <span>${escapeHtml(location.path)}</span>
+                        ${location.free_formatted ? `<span>${location.free_formatted} free</span>` : ''}
+                        <span>Last used: ${formatDate(location.last_used)}</span>
+                    </div>
+                </div>
+                <div class="favorite-actions">
+                    ${!location.is_default ? `
+                        <button class="action-btn primary" onclick="app.setDefaultLocation(${location.id})" title="Set as default">
+                            <i class="fas fa-star"></i>
+                        </button>
+                    ` : ''}
+                    <button class="action-btn" onclick="app.openFileLocation('${escapeHtml(location.path)}')" title="Open location">
+                        <i class="fas fa-folder-open"></i>
+                    </button>
+                    <button class="action-btn danger" onclick="app.removeLocation(${location.id})" title="Remove location">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    closeStorageHistory() {
+        if (this.elements.storageHistoryModal) {
+            this.elements.storageHistoryModal.style.display = 'none';
+        }
+    }
+
+    closeStorageManagement() {
+        if (this.elements.storageManagementModal) {
+            this.elements.storageManagementModal.style.display = 'none';
+        }
+    }
+
+    async addStorageLocation() {
+        const path = this.elements.newLocationPath?.value.trim();
+        const alias = this.elements.newLocationAlias?.value.trim();
+
+        if (!path) {
+            this.showError('Please enter a folder path');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/storage-locations', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'add',
+                    path: path,
+                    alias: alias
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                this.elements.newLocationPath.value = '';
+                this.elements.newLocationAlias.value = '';
+                this.loadFavoriteLocations();
+                this.showSuccess('Storage location added successfully');
+            } else {
+                this.showError(data.error || 'Failed to add storage location');
+            }
+        } catch (error) {
+            console.error('Error adding storage location:', error);
+            this.showError('Failed to add storage location');
+        }
+    }
+
+    browseNewLocation() {
+        // Open folder browser for new location
+        this.openFolderBrowser();
+        
+        // When a folder is selected, update the new location path
+        const originalConfirm = this.confirmFolderSelection.bind(this);
+        this.confirmFolderSelection = () => {
+            if (this.elements.newLocationPath) {
+                this.elements.newLocationPath.value = this.selectedFolderForModal;
+            }
+            this.closeFolderBrowser();
+            this.confirmFolderSelection = originalConfirm;
         };
+    }
 
-        messageDiv.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: ${colors[type] || colors.info};
-            color: white;
-            padding: 15px 20px;
-            border-radius: 10px;
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
-            z-index: 1001;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-weight: 600;
-            animation: slideInRight 0.5s ease;
-        `;
+    async setDefaultLocation(locationId) {
+        try {
+            const response = await fetch('/api/storage-locations', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'set_default',
+                    id: locationId
+                })
+            });
 
-        document.body.appendChild(messageDiv);
+            const data = await response.json();
 
-        setTimeout(() => {
-            messageDiv.style.animation = 'slideOutRight 0.5s ease forwards';
-            setTimeout(() => {
-                if (messageDiv.parentNode) {
-                    messageDiv.parentNode.removeChild(messageDiv);
+            if (data.success) {
+                this.loadFavoriteLocations();
+                this.showSuccess('Default storage location updated');
+            } else {
+                this.showError(data.error || 'Failed to update default location');
+            }
+        } catch (error) {
+            console.error('Error setting default location:', error);
+            this.showError('Failed to update default location');
+        }
+    }
+
+    async removeLocation(locationId) {
+        if (!confirm('Are you sure you want to remove this storage location?')) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/storage-locations', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    action: 'remove',
+                    id: locationId
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                this.loadFavoriteLocations();
+                this.showSuccess('Storage location removed');
+            } else {
+                this.showError(data.error || 'Failed to remove storage location');
+            }
+        } catch (error) {
+            console.error('Error removing storage location:', error);
+            this.showError('Failed to remove storage location');
+        }
+    }
+
+    async openFileLocation(path) {
+        try {
+            const response = await fetch('/api/open-folder', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ folder: path })
+            });
+
+            const data = await response.json();
+
+            if (!data.success) {
+                this.showError(data.error || 'Failed to open folder');
+            }
+        } catch (error) {
+            console.error('Error opening folder:', error);
+            this.showError('Failed to open folder');
+        }
+    }
+
+    // Initialize storage features
+    initializeStorage() {
+        this.loadDefaultFolderInfo();
+    }
+
+    async refreshStorageForCurrentFolder() {
+        if (!this.currentUrl) return;
+
+        try {
+            // Get current download path
+            const downloadPath = this.selectedFolder || '';
+            
+            const response = await fetch('/api/analyze-formats', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ 
+                    url: this.currentUrl,
+                    download_path: downloadPath
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                // Update storage info
+                this.currentStorageInfo = data.storage_info;
+
+                // Show updated storage information
+                this.showStorageInfo();
+                
+                // Update selected format storage if a format is already selected
+                if (this.selectedFormat) {
+                    this.showSelectedFormatStorage();
                 }
-            }, 500);
-        }, 3000);
+            }
+        } catch (error) {
+            console.error('Error refreshing storage info:', error);
+        }
     }
 }
 
@@ -1430,7 +2419,13 @@ class AnimationController {
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     // Initialize main downloader functionality
-    new YouTubeDownloader();
+    const app = new YouTubeDownloader();
+    
+    // Make app globally accessible for storage functions
+    window.app = app;
+    
+    // Initialize storage features
+    app.initializeStorage();
 
     // Initialize navigation
     new Navigation();
@@ -1491,3 +2486,24 @@ document.addEventListener('mousemove', (e) => {
     cursorElement.style.left = e.clientX - 10 + 'px';
     cursorElement.style.top = e.clientY - 10 + 'px';
 });
+
+// Helper functions for storage
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function formatDate(dateString) {
+    if (!dateString) return 'Unknown';
+    const date = new Date(dateString);
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}

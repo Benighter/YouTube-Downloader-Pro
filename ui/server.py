@@ -13,9 +13,15 @@ import time
 import zipfile
 import tempfile
 import shutil
-from flask import Flask, render_template, request, jsonify, send_from_directory
+import sqlite3
+import psutil  # For disk space information
+import datetime
+import urllib.request
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 import re
+import io
+from urllib.parse import quote
 
 # Add parent directory to path to import yt_dlp
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,6 +34,60 @@ download_progress = {}
 active_downloads = {}
 download_processes = {}  # Store subprocess objects for pause/stop functionality
 
+# Storage management configuration
+STORAGE_DB_PATH = 'storage_history.db'
+DEFAULT_STORAGE_PATHS = {
+    'windows': ['C:', 'D:', 'E:'],
+    'darwin': ['/Users', '/Applications', '/System/Volumes/Data'],
+    'linux': ['/', '/home', '/var', '/usr']
+}
+
+def init_storage_db():
+    """Initialize the storage history database"""
+    conn = sqlite3.connect(STORAGE_DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS download_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_url TEXT NOT NULL,
+            video_title TEXT,
+            file_path TEXT NOT NULL,
+            file_size INTEGER,
+            download_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            storage_location TEXT,
+            format_info TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS storage_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT UNIQUE NOT NULL,
+            alias TEXT,
+            is_default INTEGER DEFAULT 0,
+            created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+
+def get_disk_usage(path):
+    """Get disk usage information for a given path"""
+    try:
+        usage = psutil.disk_usage(path)
+        return {
+            'total': usage.total,
+            'used': usage.used,
+            'free': usage.free,
+            'percent': (usage.used / usage.total) * 100
+        }
+    except Exception as e:
+        print(f"Error getting disk usage for {path}: {e}")
+        return None
+
 def format_file_size(size_bytes):
     """Format file size in bytes to human readable format"""
     if size_bytes == 0:
@@ -39,221 +99,44 @@ def format_file_size(size_bytes):
         size_bytes /= 1024.0
     return f"{size_bytes:.1f} PB"
 
-def calculate_estimated_size(video_info, format_selector='best'):
-    """Calculate estimated file size based on available formats with enhanced accuracy"""
-    formats = video_info.get('formats', [])
-    if not formats:
-        return 0
-
-    # Try to find the best matching format
-    best_format = None
-    fallback_formats = []
-
-    # Enhanced format selection logic
-    if format_selector == 'best':
-        # Sort by filesize first, then by quality indicators
-        formats_with_size = [f for f in formats if f.get('filesize') or f.get('filesize_approx')]
-        if formats_with_size:
-            best_format = max(formats_with_size, key=lambda f: f.get('filesize', 0) or f.get('filesize_approx', 0))
-        else:
-            # Fallback to quality-based selection
-            best_format = max(formats, key=lambda f: (f.get('height', 0) * f.get('width', 0)) or f.get('tbr', 0) or 0)
-
-    elif 'height' in format_selector:
-        # Extract height from format selector like 'best[height<=720]'
-        try:
-            height_limit = int(format_selector.split('height<=')[1].split(']')[0])
-            suitable_formats = [f for f in formats if f.get('height', 0) <= height_limit and f.get('height', 0) > 0]
-
-            if suitable_formats:
-                # Prefer formats with known file sizes
-                formats_with_size = [f for f in suitable_formats if f.get('filesize') or f.get('filesize_approx')]
-                if formats_with_size:
-                    best_format = max(formats_with_size, key=lambda f: f.get('height', 0))
-                else:
-                    best_format = max(suitable_formats, key=lambda f: f.get('height', 0))
-
-                # Keep other suitable formats as fallbacks
-                fallback_formats = [f for f in suitable_formats if f != best_format]
-        except:
-            best_format = formats[0] if formats else None
-    else:
-        best_format = formats[0] if formats else None
-
-    # Try to get size from best format
-    if best_format:
-        size = best_format.get('filesize') or best_format.get('filesize_approx')
-        if size and size > 0:
-            return size
-
-        # If no direct size, try to estimate from bitrate and duration
-        if best_format.get('tbr') and video_info.get('duration'):
-            # Estimate: (bitrate in kbps * duration in seconds * 1024) / 8
-            estimated_size = int((best_format.get('tbr', 0) * video_info.get('duration', 0) * 1024) / 8)
-            if estimated_size > 0:
-                return estimated_size
-
-    # Try fallback formats
-    for fmt in fallback_formats:
-        size = fmt.get('filesize') or fmt.get('filesize_approx')
-        if size and size > 0:
-            return size
-
-    # Last resort: estimate based on video properties
-    duration = video_info.get('duration', 0)
-    if duration > 0:
-        # Rough estimation based on typical bitrates for different qualities
-        height = best_format.get('height', 480) if best_format else 480
-        if height >= 1080:
-            estimated_bitrate = 5000  # 5 Mbps for 1080p
-        elif height >= 720:
-            estimated_bitrate = 2500   # 2.5 Mbps for 720p
-        elif height >= 480:
-            estimated_bitrate = 1200   # 1.2 Mbps for 480p
-        else:
-            estimated_bitrate = 800    # 800 kbps for lower quality
-
-        # Convert to bytes: (bitrate in kbps * duration in seconds * 1024) / 8
-        return int((estimated_bitrate * duration * 1024) / 8)
-
-    return 0
-
-def get_accurate_video_size(url, format_selector='best[height<=720]'):
-    """Get more accurate video size by fetching detailed format information"""
+def add_to_download_history(video_url, video_title, file_path, file_size, storage_location, format_info=''):
+    """Add a completed download to the history database"""
     try:
-        # Use yt-dlp to get detailed format information with file sizes
-        cmd = [
-            sys.executable, '-m', 'yt_dlp',
-            '--no-check-certificate',
-            '--list-formats',
-            '--no-download',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            url
-        ]
+        conn = sqlite3.connect(STORAGE_DB_PATH)
+        cursor = conn.cursor()
 
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+        cursor.execute('''
+            INSERT INTO download_history
+            (video_url, video_title, file_path, file_size, storage_location, format_info)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (video_url, video_title, file_path, file_size, storage_location, format_info))
 
-        if result.returncode == 0 and result.stdout:
-            # Parse the format list output to extract file sizes
-            lines = result.stdout.split('\n')
-            for line in lines:
-                if 'MiB' in line or 'GiB' in line or 'KiB' in line:
-                    # Extract size information from format list
-                    parts = line.split()
-                    for i, part in enumerate(parts):
-                        if 'MiB' in part or 'GiB' in part or 'KiB' in part:
-                            try:
-                                size_str = part.replace('~', '').strip()
-                                if 'GiB' in size_str:
-                                    size_val = float(size_str.replace('GiB', ''))
-                                    return int(size_val * 1024 * 1024 * 1024)  # Convert to bytes
-                                elif 'MiB' in size_str:
-                                    size_val = float(size_str.replace('MiB', ''))
-                                    return int(size_val * 1024 * 1024)  # Convert to bytes
-                                elif 'KiB' in size_str:
-                                    size_val = float(size_str.replace('KiB', ''))
-                                    return int(size_val * 1024)  # Convert to bytes
-                            except (ValueError, IndexError):
-                                continue
-
-        # If format listing doesn't work, try getting JSON with specific format
-        cmd_json = [
-            sys.executable, '-m', 'yt_dlp',
-            '--no-check-certificate',
-            '--dump-json',
-            '--no-download',
-            '--format', format_selector,
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            url
-        ]
-
-        result_json = subprocess.run(cmd_json, capture_output=True, text=True, cwd='..')
-
-        if result_json.returncode == 0:
-            try:
-                video_info = json.loads(result_json.stdout)
-                size = video_info.get('filesize') or video_info.get('filesize_approx')
-                if size and size > 0:
-                    return size
-
-                # Try to estimate from HTTP headers if available
-                if video_info.get('url'):
-                    try:
-                        import urllib.request
-                        req = urllib.request.Request(video_info['url'])
-                        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-                        with urllib.request.urlopen(req) as response:
-                            content_length = response.headers.get('Content-Length')
-                            if content_length:
-                                return int(content_length)
-                    except:
-                        pass
-
-            except json.JSONDecodeError:
-                pass
+        conn.commit()
+        conn.close()
 
     except Exception as e:
-        print(f"Error getting accurate video size: {e}")
+        print(f"Error adding to download history: {e}")
 
-    return 0
-
-def estimate_playlist_size(url, format_selector='best[height<=720]'):
-    """Estimate total size of a playlist"""
+def update_storage_location_usage(path):
+    """Update the last used timestamp for a storage location"""
     try:
-        # Get playlist info with file sizes
-        cmd = [
-            sys.executable, '-m', 'yt_dlp',
-            '--no-check-certificate',
-            '--dump-json',
-            '--no-download',
-            '--flat-playlist',
-            url
-        ]
+        conn = sqlite3.connect(STORAGE_DB_PATH)
+        cursor = conn.cursor()
 
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+        # Insert or update storage location
+        cursor.execute('''
+            INSERT OR REPLACE INTO storage_locations (path, last_used)
+            VALUES (?, CURRENT_TIMESTAMP)
+        ''', (path,))
 
-        if result.returncode != 0:
-            return 0, 0
+        conn.commit()
+        conn.close()
 
-        lines = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
-        video_count = len(lines)
+    except Exception as e:
+        print(f"Error updating storage location usage: {e}")
 
-        # Sample a few videos to estimate average size
-        sample_size = min(3, video_count)  # Sample up to 3 videos
-        total_sample_size = 0
-
-        for i in range(sample_size):
-            try:
-                video_data = json.loads(lines[i])
-                video_url = video_data.get('url', '')
-                if video_url:
-                    # Get detailed info for this video
-                    video_cmd = [
-                        sys.executable, '-m', 'yt_dlp',
-                        '--no-check-certificate',
-                        '--dump-json',
-                        '--no-download',
-                        video_url
-                    ]
-
-                    video_result = subprocess.run(video_cmd, capture_output=True, text=True, cwd='..')
-                    if video_result.returncode == 0:
-                        video_info = json.loads(video_result.stdout)
-                        estimated_size = calculate_estimated_size(video_info, format_selector)
-                        total_sample_size += estimated_size
-            except:
-                continue
-
-        # Calculate average and estimate total
-        if sample_size > 0:
-            average_size = total_sample_size / sample_size
-            estimated_total = average_size * video_count
-            return estimated_total, video_count
-
-        return 0, video_count
-
-    except Exception:
-        return 0, 0
+# Initialize storage database on startup
+init_storage_db()
 
 class DownloadProgress:
     def __init__(self):
@@ -265,6 +148,29 @@ class DownloadProgress:
         self.filename = ""
         self.last_update = 0
         self.download_rate_history = []
+        self.expected_size = 0
+        self.storage_info = None
+        self.remaining_space = 0
+
+def progress_hook_wrapper(d, download_id, expected_size, storage_info):
+    """Wrapper for progress hook to include storage tracking"""
+    # Call the original progress hook
+    progress_hook(d)
+
+    # Add storage information to the progress data
+    if download_id in download_progress:
+        progress_obj = download_progress[download_id]
+
+        # Add storage info if available
+        if storage_info and isinstance(progress_obj, DownloadProgress):
+            # Calculate remaining space after download
+            downloaded_bytes = d.get('downloaded_bytes', 0)
+            remaining_download = max(0, expected_size - downloaded_bytes) if expected_size > 0 else 0
+
+            # Update storage tracking
+            progress_obj.remaining_space = storage_info['free_space'] - remaining_download
+            progress_obj.expected_size = expected_size
+            progress_obj.storage_info = storage_info
 
 def progress_hook(d):
     """Enhanced progress hook for yt-dlp with more frequent updates"""
@@ -353,6 +259,56 @@ def progress_hook(d):
         progress.speed = "0 MB/s"
         progress.eta = "00:00"
 
+def get_enhanced_video_size(url, format_selector='best[height<=720]'):
+    """Enhanced video size detection using multiple methods"""
+    print(f"Getting enhanced size for URL: {url} with format: {format_selector}")
+
+    # Method 1: Try to get size from format listing with specific format
+    try:
+        print("Method 1: Trying format-specific size detection...")
+        cmd = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--dump-json',
+            '--no-download',
+            '--format', format_selector,
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            '--extractor-retries', '3',
+            url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+
+        if result.returncode == 0:
+            try:
+                video_info = json.loads(result.stdout)
+                # Check for direct file size
+                size = video_info.get('filesize') or video_info.get('filesize_approx')
+                if size and size > 0:
+                    print(f"Method 1 success: Found size {size} bytes")
+                    return size
+
+                # Check for format-specific sizes
+                if 'requested_formats' in video_info:
+                    total_size = 0
+                    for fmt in video_info['requested_formats']:
+                        fmt_size = fmt.get('filesize') or fmt.get('filesize_approx', 0)
+                        total_size += fmt_size
+                    if total_size > 0:
+                        print(f"Method 1 success: Combined format size {total_size} bytes")
+                        return total_size
+
+            except json.JSONDecodeError:
+                print("Method 1 failed: JSON decode error")
+                pass
+        else:
+            print(f"Method 1 failed: Command returned {result.returncode}")
+    except Exception as e:
+        print(f"Method 1 failed: {e}")
+
+    print("All methods failed, returning 0")
+    return 0
+
 @app.route('/')
 def index():
     """Serve the main UI"""
@@ -393,128 +349,228 @@ def analyze_video():
         video_count = 0
 
         if playlist_result.returncode == 0:
-            lines = [line.strip() for line in playlist_result.stdout.strip().split('\n') if line.strip()]
-            if len(lines) > 1:  # More than one entry means it's a playlist
-                is_playlist = True
+            try:
+                lines = [line.strip() for line in playlist_result.stdout.strip().split('\n') if line.strip()]
                 video_count = len(lines)
-
-                # Get playlist metadata
-                playlist_meta_cmd = [
-                    sys.executable, '-m', 'yt_dlp',
-                    '--no-check-certificate',
-                    '--dump-json',
-                    '--no-download',
-                    '--playlist-items', '1',
-                    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                    '--extractor-retries', '3',
-                    url
-                ]
-
-                meta_result = subprocess.run(playlist_meta_cmd, capture_output=True, text=True, cwd='..')
-                if meta_result.returncode == 0:
+                
+                if video_count > 1:
+                    is_playlist = True
+                    
+                    # Get playlist metadata
                     try:
-                        first_video = json.loads(meta_result.stdout.strip())
+                        first_entry = json.loads(lines[0]) if lines else {}
+                        playlist_title = first_entry.get('playlist_title', 'Unknown Playlist')
+                        playlist_uploader = first_entry.get('playlist_uploader', 'Unknown')
+                        
+                        # Try to get a thumbnail from the first video
+                        playlist_thumbnail = first_entry.get('thumbnail', '')
+                        
                         playlist_info = {
-                            'title': first_video.get('playlist_title', 'Unknown Playlist'),
-                            'uploader': first_video.get('playlist_uploader', first_video.get('uploader', 'Unknown')),
+                            'title': playlist_title,
+                            'uploader': playlist_uploader,
+                            'thumbnail': playlist_thumbnail,
                             'video_count': video_count,
-                            'playlist_id': first_video.get('playlist_id', ''),
-                            'thumbnail': first_video.get('playlist_thumbnail') or first_video.get('thumbnail', '')
+                            'description': f'Playlist with {video_count} videos'
                         }
-                    except json.JSONDecodeError:
-                        # Fallback playlist info if JSON parsing fails
+                    except (json.JSONDecodeError, IndexError):
                         playlist_info = {
-                            'title': 'Playlist',
+                            'title': 'Unknown Playlist',
                             'uploader': 'Unknown',
+                            'thumbnail': '',
                             'video_count': video_count,
-                            'playlist_id': '',
-                            'thumbnail': ''
+                            'description': f'Playlist with {video_count} videos'
                         }
+            except Exception as e:
+                print(f"Error parsing playlist info: {e}")
 
         if is_playlist:
-            # Estimate playlist size
-            estimated_total_size, video_count_confirmed = estimate_playlist_size(url)
-            if playlist_info:
-                playlist_info['estimated_total_size'] = estimated_total_size
-                playlist_info['estimated_total_size_formatted'] = format_file_size(estimated_total_size)
-                playlist_info['video_count'] = video_count_confirmed or playlist_info['video_count']
-
             return jsonify({
-                'success': True,
-                'is_playlist': True,
+                'success': True, 
+                'is_playlist': True, 
                 'playlist_info': playlist_info
             })
-        else:
-            # Use yt-dlp to extract single video info
-            cmd = [
-                sys.executable, '-m', 'yt_dlp',
-                '--no-check-certificate',
-                '--dump-json',
-                '--no-download',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                '--extractor-retries', '3',
-                url
-            ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+        # Single video analysis
+        cmd = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--dump-json',
+            '--no-download',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            '--extractor-retries', '3',
+            url
+        ]
 
-            if result.returncode != 0:
-                # Better error message for common issues
-                error_msg = result.stderr.strip() if result.stderr else 'Failed to analyze video'
-                if 'Failed to extract any player response' in error_msg:
-                    error_msg = 'This video may be unavailable, private, or region-blocked. Please try a different video or check if the URL is correct.'
-                elif 'Video unavailable' in error_msg:
-                    error_msg = 'This video is unavailable. It may have been deleted or made private.'
-                return jsonify({'error': error_msg}), 400
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
 
-            try:
-                # Parse the JSON output
-                video_info = json.loads(result.stdout)
+        if result.returncode != 0:
+            return jsonify({'error': 'Failed to analyze video. Please check the URL and try again.'}), 400
 
-                # Extract relevant information
-                info = {
-                    'title': video_info.get('title', 'Unknown Title'),
-                    'channel': video_info.get('uploader', 'Unknown Channel'),
-                    'duration': format_duration(video_info.get('duration', 0)),
-                    'view_count': format_number(video_info.get('view_count', 0)),
-                    'upload_date': format_date(video_info.get('upload_date', '')),
-                    'thumbnail': video_info.get('thumbnail', ''),
-                    'formats': extract_formats(video_info.get('formats', [])),
-                    'filesize_approx': video_info.get('filesize_approx', 0),
-                    'filesize': video_info.get('filesize', 0)
-                }
-            except json.JSONDecodeError:
-                return jsonify({'error': 'Failed to parse video information'}), 400
+        try:
+            video_info = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return jsonify({'error': 'Failed to parse video information'}), 400
 
-            # Calculate estimated file size for best quality
-            estimated_size = calculate_estimated_size(video_info, 'best[height<=720]')
+        # Extract video information
+        info = {
+            'title': video_info.get('title', 'Unknown Title'),
+            'thumbnail': video_info.get('thumbnail', ''),
+            'uploader': video_info.get('uploader', 'Unknown'),
+            'duration': video_info.get('duration', 0),
+            'view_count': video_info.get('view_count', 0),
+            'upload_date': video_info.get('upload_date', ''),
+            'description': video_info.get('description', ''),
+            'formats': []
+        }
 
-            # If the estimated size is 0 or very small, try to get more accurate size
-            if estimated_size < 1024 * 1024:  # Less than 1MB, probably inaccurate
-                print(f"Initial size estimate too small ({estimated_size} bytes), trying accurate method...")
-                accurate_size = get_accurate_video_size(url, 'best[height<=720]')
-                if accurate_size > estimated_size:
-                    estimated_size = accurate_size
-                    print(f"Updated size to {estimated_size} bytes using accurate method")
-
-            info['estimated_size'] = estimated_size
-            info['estimated_size_formatted'] = format_file_size(estimated_size)
-
-            # Add additional size information for debugging
-            info['size_sources'] = {
-                'filesize': video_info.get('filesize', 0),
-                'filesize_approx': video_info.get('filesize_approx', 0),
-                'calculated': estimated_size
-            }
-
-            return jsonify({'success': True, 'is_playlist': False, 'info': info})
+        return jsonify({'success': True, 'is_playlist': False, 'info': info})
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/analyze-formats', methods=['POST'])
+def analyze_formats():
+    """Analyze video formats and provide size estimates with storage information"""
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        download_path = data.get('download_path', '').strip()
+
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+
+        # Get video info with all formats
+        cmd = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--dump-json',
+            '--no-download',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            '--extractor-retries', '3',
+            url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+
+        if result.returncode != 0:
+            return jsonify({'error': 'Failed to analyze video formats'}), 400
+
+        try:
+            video_info = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return jsonify({'error': 'Failed to parse video information'}), 400
+
+        # Define format selectors we want to analyze
+        format_selectors = [
+            ('best', 'Best Quality'),
+            ('best[height<=1080]', '1080p HD'),
+            ('best[height<=720]', '720p HD'),
+            ('best[height<=480]', '480p'),
+            ('bestaudio', 'Audio Only'),
+            ('140', 'MP4 Audio')
+        ]
+
+        format_analysis = []
+
+        for selector, display_name in format_selectors:
+            # Get size for this specific format
+            size_bytes = get_enhanced_video_size(url, selector)
+
+            # Determine confidence level
+            confidence = 'high' if size_bytes > 0 else 'low'
+
+            # Format size display
+            if size_bytes > 0:
+                size_display = format_file_size(size_bytes)
+            else:
+                size_display = "Unknown"
+                size_bytes = 0
+
+            format_analysis.append({
+                'selector': selector,
+                'display_name': display_name,
+                'size_bytes': size_bytes,
+                'size_display': size_display,
+                'confidence': confidence,
+                'estimated': confidence != 'high'
+            })
+
+        # Get storage information for the download path
+        storage_info = None
+        if download_path:
+            try:
+                # Determine the actual path to check
+                if os.path.isabs(download_path):
+                    check_path = download_path
+                else:
+                    # Relative path - check from parent directory
+                    check_path = os.path.join('..', download_path)
+
+                # Get the drive/mount point for the path
+                if os.name == 'nt':  # Windows
+                    drive = os.path.splitdrive(os.path.abspath(check_path))[0]
+                    if not drive:
+                        drive = 'C:'  # Fallback to C: drive
+                else:  # Unix-like
+                    drive = '/'
+
+                disk_usage = get_disk_usage(drive)
+                if disk_usage:
+                    storage_info = {
+                        'drive': drive,
+                        'total_space': disk_usage['total'],
+                        'free_space': disk_usage['free'],
+                        'used_space': disk_usage['used'],
+                        'total_formatted': format_file_size(disk_usage['total']),
+                        'free_formatted': format_file_size(disk_usage['free']),
+                        'used_formatted': format_file_size(disk_usage['used']),
+                        'usage_percent': disk_usage['percent']
+                    }
+            except Exception as e:
+                print(f"Error getting storage info for {download_path}: {e}")
+
+        # If no download path provided, get default storage info
+        if not storage_info:
+            try:
+                home_dir = os.path.expanduser('~')
+                default_path = os.path.join(home_dir, 'Downloads', 'YT-dlp')
+
+                if os.name == 'nt':  # Windows
+                    drive = os.path.splitdrive(home_dir)[0]
+                    if not drive:
+                        drive = 'C:'
+                else:  # Unix-like
+                    drive = '/'
+
+                disk_usage = get_disk_usage(drive)
+                if disk_usage:
+                    storage_info = {
+                        'drive': drive,
+                        'total_space': disk_usage['total'],
+                        'free_space': disk_usage['free'],
+                        'used_space': disk_usage['used'],
+                        'total_formatted': format_file_size(disk_usage['total']),
+                        'free_formatted': format_file_size(disk_usage['free']),
+                        'used_formatted': format_file_size(disk_usage['used']),
+                        'usage_percent': disk_usage['percent']
+                    }
+            except Exception as e:
+                print(f"Error getting default storage info: {e}")
+
+        return jsonify({
+            'success': True,
+            'formats': format_analysis,
+            'storage_info': storage_info,
+            'video_duration': video_info.get('duration', 0)
+        })
+
+    except Exception as e:
+        print(f"Error in analyze_formats: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/download', methods=['POST'])
 def start_download():
-    """Start video download"""
+    """Start video download with real-time progress tracking"""
     try:
         data = request.get_json()
         url = data.get('url', '').strip()
@@ -551,92 +607,164 @@ def start_download():
         except Exception as e:
             return jsonify({'error': f'Cannot create directory: {str(e)}'}), 400
 
-        # Build yt-dlp command
-        cmd = [
-            sys.executable, '-m', 'yt_dlp',
-            '--no-check-certificate',
-            '-f', format_selector,
-            '--output', output_template,
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            '--extractor-retries', '3'
-        ]
+        # Get expected file size for storage tracking
+        expected_size = get_enhanced_video_size(url, format_selector)
 
-        # Add optional flags
-        if options.get('subtitles'):
-            cmd.extend(['--write-subs', '--sub-langs', 'en'])
+        # Get storage info for the download location
+        storage_info = None
+        try:
+            if os.name == 'nt':  # Windows
+                drive = os.path.splitdrive(os.path.abspath(download_dir))[0]
+                if not drive:
+                    drive = 'C:'
+            else:  # Unix-like
+                drive = '/'
 
-        if options.get('thumbnail'):
-            cmd.append('--write-thumbnail')
-
-        if options.get('extract_audio'):
-            cmd.extend(['-x', '--audio-format', 'mp3'])
-
-        cmd.append(url)
+            disk_usage = get_disk_usage(drive)
+            if disk_usage:
+                storage_info = {
+                    'free_space': disk_usage['free'],
+                    'total_space': disk_usage['total'],
+                    'used_space': disk_usage['used']
+                }
+        except Exception as e:
+            print(f"Error getting storage info: {e}")
 
         # Start download in background thread
         def run_download():
             try:
-                # Use Popen for better process control
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                         text=True, cwd='..')
+                import yt_dlp
 
-                # Store the process for pause/stop functionality
-                download_processes[download_id] = process
+                # Set up yt-dlp options with progress hook
+                ydl_opts = {
+                    'format': format_selector,
+                    'outtmpl': output_template,
+                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'extractor_retries': 3,
+                    'no_check_certificate': True,
+                    'progress_hooks': [lambda d: progress_hook_wrapper(d, download_id, expected_size, storage_info)]
+                }
 
-                # Wait for completion
-                stdout, stderr = process.communicate()
+                # Add optional flags
+                if options.get('subtitles'):
+                    ydl_opts['writesubtitles'] = True
+                    ydl_opts['subtitleslangs'] = ['en']
+
+                if options.get('thumbnail'):
+                    ydl_opts['writethumbnail'] = True
+
+                if options.get('extract_audio'):
+                    ydl_opts['format'] = 'bestaudio/best'
+                    ydl_opts['postprocessors'] = [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }]
+
+                # Store download info for cancellation
+                download_processes[download_id] = {'ydl': None, 'cancelled': False}
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    download_processes[download_id]['ydl'] = ydl
+
+                    # Start download
+                    ydl.download([url])
 
                 # Clean up process reference
                 if download_id in download_processes:
                     del download_processes[download_id]
 
-                if process.returncode == 0:
-                    download_progress[download_id] = {
-                        'status': 'completed',
-                        'progress': 100,
-                        'message': 'Download completed successfully!'
-                    }
-                else:
-                    # Check if it was cancelled
-                    if download_progress.get(download_id, {}).get('status') == 'cancelled':
-                        return  # Don't overwrite cancelled status
+                # Check if download was cancelled
+                if download_progress.get(download_id, {}).get('status') == 'cancelled':
+                    return
 
-                    # Better error messages
-                    error_msg = stderr.strip() if stderr else 'Download failed'
-                    if 'Failed to extract any player response' in error_msg:
-                        error_msg = 'This video may be unavailable, private, or region-blocked. Please try a different video.'
-                    elif 'Video unavailable' in error_msg:
-                        error_msg = 'This video is unavailable. It may have been deleted or made private.'
+                # Download completed successfully
+                download_progress[download_id] = DownloadProgress()
+                download_progress[download_id].status = 'completed'
+                download_progress[download_id].progress = 100
+                download_progress[download_id].speed = '0 MB/s'
+                download_progress[download_id].eta = '00:00'
 
-                    download_progress[download_id] = {
-                        'status': 'error',
-                        'progress': 0,
-                        'message': error_msg
-                    }
+                # Add to storage history
+                try:
+                    # Try to find the downloaded file and get its size
+                    downloaded_files = []
+                    if os.path.exists(download_dir):
+                        for file in os.listdir(download_dir):
+                            file_path = os.path.join(download_dir, file)
+                            if os.path.isfile(file_path):
+                                # Check if file was created recently (within last 5 minutes)
+                                file_mtime = os.path.getmtime(file_path)
+                                if time.time() - file_mtime < 300:  # 5 minutes
+                                    downloaded_files.append((file_path, os.path.getsize(file_path)))
+
+                    # Add the largest/most recent file to history
+                    if downloaded_files:
+                        latest_file = max(downloaded_files, key=lambda x: os.path.getmtime(x[0]))
+                        file_path, file_size = latest_file
+
+                        # Extract video title from filename
+                        video_title = "Downloaded Video"
+                        try:
+                            filename = os.path.basename(file_path)
+                            video_title = os.path.splitext(filename)[0]
+                        except:
+                            pass
+
+                        add_to_download_history(
+                            video_url=url,
+                            video_title=video_title,
+                            file_path=file_path,
+                            file_size=file_size,
+                            storage_location=download_dir,
+                            format_info=format_selector
+                        )
+
+                        # Update storage location usage
+                        update_storage_location_usage(download_dir)
+
+                except Exception as storage_error:
+                    print(f"Error updating storage history: {storage_error}")
+
             except Exception as e:
                 # Clean up process reference
                 if download_id in download_processes:
                     del download_processes[download_id]
 
-                download_progress[download_id] = {
-                    'status': 'error',
-                    'progress': 0,
-                    'message': f'Download failed: {str(e)}'
-                }
+                # Check if it was cancelled
+                if download_progress.get(download_id, {}).get('status') == 'cancelled':
+                    return
+
+                download_progress[download_id] = DownloadProgress()
+                download_progress[download_id].status = 'error'
+                download_progress[download_id].progress = 0
+                download_progress[download_id].speed = '0 MB/s'
+                download_progress[download_id].eta = '00:00'
+
+                # Better error messages
+                error_msg = str(e)
+                if 'Failed to extract any player response' in error_msg:
+                    error_msg = 'This video may be unavailable, private, or region-blocked. Please try a different video.'
+                elif 'Video unavailable' in error_msg:
+                    error_msg = 'This video is unavailable. It may have been deleted or made private.'
 
         # Initialize progress
-        download_progress[download_id] = {
-            'status': 'starting',
-            'progress': 0,
-            'message': 'Preparing download...'
-        }
+        download_progress[download_id] = DownloadProgress()
+        download_progress[download_id].status = 'starting'
+        download_progress[download_id].progress = 0
 
         # Start download thread
         thread = threading.Thread(target=run_download)
         thread.daemon = True
         thread.start()
 
-        return jsonify({'success': True, 'download_id': download_id})
+        return jsonify({
+            'success': True,
+            'download_id': download_id,
+            'expected_size': expected_size,
+            'expected_size_formatted': format_file_size(expected_size) if expected_size > 0 else 'Unknown',
+            'storage_info': storage_info
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -655,135 +783,180 @@ def start_playlist_download():
         if not url:
             return jsonify({'error': 'URL is required'}), 400
 
-        if not folder:
-            return jsonify({'error': 'Download folder is required'}), 400
+        # Generate download ID
+        download_id = str(int(time.time()))
 
-        # Generate unique download ID
-        download_id = f"playlist_{int(time.time() * 1000)}"
+        # Determine download directory
+        if folder:
+            if os.path.isabs(folder):
+                download_dir = folder
+            else:
+                download_dir = os.path.join('..', folder)
+        else:
+            home_dir = os.path.expanduser('~')
+            download_dir = os.path.join(home_dir, 'Downloads', 'YT-dlp')
 
-        # Initialize progress tracking
-        download_progress[download_id] = {
-            'status': 'starting',
-            'progress': 0,
-            'message': 'Preparing playlist download...',
-            'current_video': 0,
-            'total_videos': 0,
-            'current_title': '',
-            'download_type': download_type
-        }
-
-        # Create download directory
+        # Ensure download directory exists
         try:
-            os.makedirs(folder, exist_ok=True)
+            os.makedirs(download_dir, exist_ok=True)
         except Exception as e:
             return jsonify({'error': f'Cannot create directory: {str(e)}'}), 400
 
         def run_playlist_download():
             try:
                 if download_type == 'zip':
-                    # Create temporary directory for downloads
-                    temp_dir = tempfile.mkdtemp()
-                    download_folder = temp_dir
-                else:
-                    download_folder = folder
-
-                # Build output template
-                if download_type == 'zip':
-                    output_template = os.path.join(download_folder, '%(playlist_index)s - %(title)s.%(ext)s')
-                else:
-                    output_template = os.path.join(download_folder, '%(playlist_title)s', '%(playlist_index)s - %(title)s.%(ext)s')
-
-                # Build yt-dlp command for playlist
-                cmd = [
-                    sys.executable, '-m', 'yt_dlp',
-                    '--no-check-certificate',
-                    '-f', format_selector,
-                    '--output', output_template,
-                    '--write-info-json' if options.get('write_info_json') else '--no-write-info-json',
-                    '--write-thumbnail' if options.get('write_thumbnail') else '--no-write-thumbnail'
-                ]
-
-                # Add audio options if specified
-                if options.get('extract_audio'):
-                    cmd.extend(['--extract-audio', '--audio-format', options.get('audio_format', 'mp3')])
-
-                cmd.append(url)
-
-                # Custom progress hook for playlist
-                def playlist_progress_hook(d):
-                    progress = download_progress.get(download_id, {})
-
-                    if d['status'] == 'downloading':
-                        # Extract playlist info from filename
-                        filename = d.get('filename', '')
-                        if filename:
-                            basename = os.path.basename(filename)
-                            progress['current_title'] = basename
-
+                    # Download to temporary directory first, then zip
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        temp_output = os.path.join(temp_dir, '%(playlist)s', '%(playlist_index)s - %(title)s.%(ext)s')
+                        
+                        # Build yt-dlp command for temporary download
+                        cmd = [
+                            sys.executable, '-m', 'yt_dlp',
+                            '--no-check-certificate',
+                            '-f', format_selector,
+                            '--output', temp_output,
+                            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            '--extractor-retries', '3'
+                        ]
+                        
+                        # Add optional flags
+                        if options.get('subtitles'):
+                            cmd.extend(['--write-subs', '--sub-langs', 'en'])
+                        if options.get('thumbnail'):
+                            cmd.append('--write-thumbnail')
+                        if options.get('extract_audio'):
+                            cmd.extend(['-x', '--audio-format', 'mp3'])
+                        
+                        cmd.append(url)
+                        
                         # Update progress
-                        downloaded = d.get('downloaded_bytes', 0)
-                        total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-                        if total:
-                            file_progress = (downloaded / total) * 100
-                            progress['progress'] = file_progress
-                            progress['size'] = f"{downloaded / (1024*1024):.1f} / {total / (1024*1024):.1f} MB"
+                        download_progress[download_id] = {
+                            'status': 'downloading',
+                            'progress': 0,
+                            'message': 'Downloading playlist videos...'
+                        }
+                        
+                        # Run download
+                        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd='..')
+                        download_processes[download_id] = process
+                        
+                        stdout, stderr = process.communicate()
+                        
+                        if process.returncode == 0:
+                            # Create ZIP file
+                            download_progress[download_id] = {
+                                'status': 'downloading',
+                                'progress': 50,
+                                'message': 'Creating ZIP archive...'
+                            }
+                            
+                            # Get playlist name for ZIP file
+                            playlist_name = "playlist"
+                            try:
+                                playlist_cmd = [sys.executable, '-m', 'yt_dlp', '--dump-json', '--flat-playlist', url]
+                                playlist_result = subprocess.run(playlist_cmd, capture_output=True, text=True, cwd='..')
+                                if playlist_result.returncode == 0:
+                                    lines = playlist_result.stdout.strip().split('\n')
+                                    if lines:
+                                        first_entry = json.loads(lines[0])
+                                        playlist_name = first_entry.get('playlist_title', 'playlist')
+                            except:
+                                pass
+                            
+                            # Clean playlist name for filename
+                            safe_name = re.sub(r'[<>:"/\\|?*]', '_', playlist_name)
+                            zip_filename = f"{safe_name}.zip"
+                            zip_path = os.path.join(download_dir, zip_filename)
+                            
+                            # Create ZIP
+                            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                                for root, dirs, files in os.walk(temp_dir):
+                                    for file in files:
+                                        file_path = os.path.join(root, file)
+                                        arcname = os.path.relpath(file_path, temp_dir)
+                                        zipf.write(file_path, arcname)
+                            
 
-                        progress['status'] = 'downloading'
-                        progress['message'] = f'Downloading: {progress.get("current_title", "video")}'
-
-                    elif d['status'] == 'finished':
-                        progress['current_video'] = progress.get('current_video', 0) + 1
-                        progress['message'] = f'Completed {progress["current_video"]} videos'
-
-                # Run the download
-                result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
-
-                if result.returncode == 0:
-                    if download_type == 'zip':
-                        # Create ZIP file
-                        zip_filename = f"playlist_{int(time.time())}.zip"
-                        zip_path = os.path.join(folder, zip_filename)
-
-                        download_progress[download_id]['status'] = 'creating_zip'
-                        download_progress[download_id]['message'] = 'Creating ZIP file...'
-
-                        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                            for root, dirs, files in os.walk(temp_dir):
-                                for file in files:
-                                    file_path = os.path.join(root, file)
-                                    arcname = os.path.relpath(file_path, temp_dir)
-                                    zipf.write(file_path, arcname)
-
-                        # Clean up temp directory
-                        shutil.rmtree(temp_dir)
-
+                            download_progress[download_id] = {
+                                'status': 'completed',
+                                'progress': 100,
+                                'message': f'Playlist downloaded and zipped as {zip_filename}'
+                            }
+                        else:
+                            download_progress[download_id] = {
+                                'status': 'error',
+                                'progress': 0,
+                                'message': 'Failed to download playlist'
+                            }
+                else:
+                    # Individual files download
+                    output_template = os.path.join(download_dir, '%(playlist)s', '%(playlist_index)s - %(title)s.%(ext)s')
+                    
+                    cmd = [
+                        sys.executable, '-m', 'yt_dlp',
+                        '--no-check-certificate',
+                        '-f', format_selector,
+                        '--output', output_template,
+                        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        '--extractor-retries', '3'
+                    ]
+                    
+                    # Add optional flags
+                    if options.get('subtitles'):
+                        cmd.extend(['--write-subs', '--sub-langs', 'en'])
+                    if options.get('thumbnail'):
+                        cmd.append('--write-thumbnail')
+                    if options.get('extract_audio'):
+                        cmd.extend(['-x', '--audio-format', 'mp3'])
+                    
+                    cmd.append(url)
+                    
+                    # Update progress
+                    download_progress[download_id] = {
+                        'status': 'downloading',
+                        'progress': 0,
+                        'message': 'Downloading playlist...'
+                    }
+                    
+                    # Run download
+                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd='..')
+                    download_processes[download_id] = process
+                    
+                    stdout, stderr = process.communicate()
+                    
+                    if process.returncode == 0:
                         download_progress[download_id] = {
                             'status': 'completed',
                             'progress': 100,
-                            'message': f'Playlist downloaded as ZIP: {zip_filename}',
-                            'zip_file': zip_filename,
-                            'download_type': 'zip'
+                            'message': 'Playlist download completed!'
                         }
                     else:
                         download_progress[download_id] = {
-                            'status': 'completed',
-                            'progress': 100,
-                            'message': 'Playlist download completed successfully!',
-                            'download_type': 'individual'
+                            'status': 'error',
+                            'progress': 0,
+                            'message': f'Playlist download failed: {stderr}'
                         }
-                else:
-                    download_progress[download_id] = {
-                        'status': 'error',
-                        'progress': 0,
-                        'message': f'Download failed: {result.stderr}'
-                    }
+
+                # Clean up process reference
+                if download_id in download_processes:
+                    del download_processes[download_id]
 
             except Exception as e:
                 download_progress[download_id] = {
                     'status': 'error',
                     'progress': 0,
-                    'message': f'Download error: {str(e)}'
+                    'message': f'Playlist download failed: {str(e)}'
                 }
+                
+                if download_id in download_processes:
+                    del download_processes[download_id]
+
+        # Initialize progress
+        download_progress[download_id] = {
+            'status': 'starting',
+            'progress': 0,
+            'message': 'Preparing playlist download...'
+        }
 
         # Start download thread
         thread = threading.Thread(target=run_playlist_download)
@@ -792,99 +965,6 @@ def start_playlist_download():
 
         return jsonify({'success': True, 'download_id': download_id})
 
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/pause/<download_id>', methods=['POST'])
-def pause_download(download_id):
-    """Pause a download"""
-    try:
-        if download_id in download_processes:
-            process = download_processes[download_id]
-            if process and process.poll() is None:  # Process is still running
-                # On Windows, we need to use a different approach
-                import signal
-                try:
-                    if sys.platform == "win32":
-                        # On Windows, we'll mark it as paused and let the process continue
-                        # The actual pausing will be handled by the frontend
-                        download_progress[download_id]['status'] = 'paused'
-                        download_progress[download_id]['message'] = 'Download paused'
-                    else:
-                        # On Unix systems, we can send SIGSTOP
-                        process.send_signal(signal.SIGSTOP)
-                        download_progress[download_id]['status'] = 'paused'
-                        download_progress[download_id]['message'] = 'Download paused'
-
-                    return jsonify({'success': True, 'message': 'Download paused'})
-                except Exception as e:
-                    return jsonify({'error': f'Failed to pause: {str(e)}'}), 500
-            else:
-                return jsonify({'error': 'Download not active'}), 400
-        else:
-            return jsonify({'error': 'Download not found'}), 404
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/resume/<download_id>', methods=['POST'])
-def resume_download(download_id):
-    """Resume a paused download"""
-    try:
-        if download_id in download_processes:
-            process = download_processes[download_id]
-            if process and process.poll() is None:  # Process is still running
-                import signal
-                try:
-                    if sys.platform == "win32":
-                        # On Windows, just update the status
-                        download_progress[download_id]['status'] = 'downloading'
-                        download_progress[download_id]['message'] = 'Download resumed'
-                    else:
-                        # On Unix systems, send SIGCONT
-                        process.send_signal(signal.SIGCONT)
-                        download_progress[download_id]['status'] = 'downloading'
-                        download_progress[download_id]['message'] = 'Download resumed'
-
-                    return jsonify({'success': True, 'message': 'Download resumed'})
-                except Exception as e:
-                    return jsonify({'error': f'Failed to resume: {str(e)}'}), 500
-            else:
-                return jsonify({'error': 'Download not active'}), 400
-        else:
-            return jsonify({'error': 'Download not found'}), 404
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/stop/<download_id>', methods=['POST'])
-def stop_download(download_id):
-    """Stop/cancel a download"""
-    try:
-        if download_id in download_processes:
-            process = download_processes[download_id]
-            if process and process.poll() is None:  # Process is still running
-                try:
-                    process.terminate()  # Graceful termination
-                    # Wait a bit for graceful termination
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()  # Force kill if it doesn't terminate gracefully
-
-                    # Clean up
-                    del download_processes[download_id]
-                    download_progress[download_id] = {
-                        'status': 'cancelled',
-                        'progress': 0,
-                        'message': 'Download cancelled by user'
-                    }
-
-                    return jsonify({'success': True, 'message': 'Download stopped'})
-                except Exception as e:
-                    return jsonify({'error': f'Failed to stop: {str(e)}'}), 500
-            else:
-                return jsonify({'error': 'Download not active'}), 400
-        else:
-            return jsonify({'error': 'Download not found'}), 404
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -903,7 +983,7 @@ def get_progress(download_id):
             'eta': '--:--'
         })
 
-    # Handle both DownloadProgress objects and dictionary formats
+    # Handle DownloadProgress objects
     if isinstance(progress_obj, DownloadProgress):
         # Convert DownloadProgress object to dictionary
         progress_data = {
@@ -915,6 +995,17 @@ def get_progress(download_id):
             'eta': progress_obj.eta,
             'filename': progress_obj.filename
         }
+
+        # Add storage information if available
+        if progress_obj.storage_info:
+            progress_data['storage_info'] = {
+                'expected_size': progress_obj.expected_size,
+                'expected_size_formatted': format_file_size(progress_obj.expected_size) if progress_obj.expected_size > 0 else 'Unknown',
+                'remaining_space': progress_obj.remaining_space,
+                'remaining_space_formatted': format_file_size(progress_obj.remaining_space) if progress_obj.remaining_space > 0 else 'Unknown',
+                'free_space': progress_obj.storage_info['free_space'],
+                'free_space_formatted': format_file_size(progress_obj.storage_info['free_space'])
+            }
     else:
         # Already a dictionary (for playlist downloads, etc.)
         progress_data = progress_obj.copy()
@@ -929,168 +1020,192 @@ def get_progress(download_id):
 
     return jsonify(progress_data)
 
-@app.route('/api/default-folder', methods=['GET'])
+@app.route('/api/stop/<download_id>', methods=['POST'])
+def stop_download(download_id):
+    """Stop/cancel download"""
+    try:
+        if download_id in download_processes:
+            process_info = download_processes[download_id]
+
+            # Mark as cancelled
+            download_progress[download_id] = DownloadProgress()
+            download_progress[download_id].status = 'cancelled'
+            download_progress[download_id].progress = 0
+            download_progress[download_id].speed = '0 MB/s'
+            download_progress[download_id].eta = '00:00'
+
+            # Set cancellation flag
+            process_info['cancelled'] = True
+
+            # Try to interrupt yt-dlp if available
+            if process_info.get('ydl'):
+                try:
+                    # yt-dlp doesn't have a direct cancel method, but we can mark it as cancelled
+                    pass
+                except:
+                    pass
+
+            # Clean up
+            del download_processes[download_id]
+
+            return jsonify({'success': True, 'message': 'Download cancelled'})
+        else:
+            return jsonify({'error': 'Download not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/storage-info')
+def get_storage_info():
+    """Get storage information for download location"""
+    try:
+        path = request.args.get('path', '')
+
+        if not path:
+            # Get default download location
+            home_dir = os.path.expanduser('~')
+            path = os.path.join(home_dir, 'Downloads', 'YT-dlp')
+
+        # Determine drive/mount point
+        if os.name == 'nt':  # Windows
+            drive = os.path.splitdrive(os.path.abspath(path))[0]
+            if not drive:
+                drive = 'C:'
+        else:  # Unix-like
+            drive = '/'
+
+        usage = get_disk_usage(drive)
+        if not usage:
+            return jsonify({'error': 'Unable to get storage information'}), 400
+
+        return jsonify({
+            'success': True,
+            'path': path,
+            'drive': drive,
+            'total_space': usage['total'],
+            'free_space': usage['free'],
+            'used_space': usage['used'],
+            'total_formatted': format_file_size(usage['total']),
+            'free_formatted': format_file_size(usage['free']),
+            'used_formatted': format_file_size(usage['used']),
+            'usage_percent': usage['percent']
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/default-folder')
 def get_default_folder():
-    """Get the default download folder path"""
+    """Get the default download folder"""
     try:
         home_dir = os.path.expanduser('~')
         default_folder = os.path.join(home_dir, 'Downloads', 'YT-dlp')
-        return jsonify({'success': True, 'folder': default_folder})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
-@app.route('/api/open-folder', methods=['POST'])
-def open_folder():
-    """Open the download folder in file explorer"""
-    try:
-        data = request.get_json()
-        folder = data.get('folder', '').strip()
-
-        # Determine the folder path
-        if folder:
-            if os.path.isabs(folder):
-                folder_path = folder
-            else:
-                folder_path = os.path.join('..', folder)
-        else:
-            # Use default Downloads/YT-dlp directory
-            home_dir = os.path.expanduser('~')
-            folder_path = os.path.join(home_dir, 'Downloads', 'YT-dlp')
-
-        # Convert to absolute path
-        folder_path = os.path.abspath(folder_path)
-
-        # Check if folder exists
-        if not os.path.exists(folder_path):
-            return jsonify({'error': 'Folder does not exist'}), 400
-
-        # Open folder based on OS
-        import platform
-        system = platform.system()
-
+        # Get storage info for the default folder
+        storage_info = None
         try:
-            if system == 'Windows':
-                os.startfile(folder_path)
-            elif system == 'Darwin':  # macOS
-                subprocess.run(['open', folder_path])
-            else:  # Linux and others
-                subprocess.run(['xdg-open', folder_path])
+            if os.name == 'nt':  # Windows
+                drive = os.path.splitdrive(home_dir)[0]
+                if not drive:
+                    drive = 'C:'
+            else:  # Unix-like
+                drive = '/'
 
-            return jsonify({'success': True, 'message': f'Opened folder: {folder_path}'})
-
+            usage = get_disk_usage(drive)
+            if usage:
+                storage_info = {
+                    'total_space': usage['total'],
+                    'free_space': usage['free'],
+                    'used_space': usage['used'],
+                    'total_formatted': format_file_size(usage['total']),
+                    'free_formatted': format_file_size(usage['free']),
+                    'used_formatted': format_file_size(usage['used']),
+                    'usage_percent': usage['percent']
+                }
         except Exception as e:
-            return jsonify({'error': f'Could not open folder: {str(e)}'}), 500
+            print(f"Error getting storage info for default folder: {e}")
+
+        return jsonify({
+            'success': True,
+            'folder': default_folder,
+            'display': f'Default: {os.path.basename(default_folder)}',
+            'storage_info': storage_info
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/formats', methods=['POST'])
-def get_formats():
-    """Get available formats for a video"""
+@app.route('/api/browse-folder', methods=['POST'])
+def browse_folder():
+    """Browse folders for folder selection"""
     try:
         data = request.get_json()
-        url = data.get('url', '').strip()
+        path = data.get('path', '')
 
-        if not url:
-            return jsonify({'error': 'URL is required'}), 400
-
-        cmd = [
-            sys.executable, '-m', 'yt_dlp',
-            '--no-check-certificate',
-            '--list-formats',
-            '--dump-json',
-            url
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
-
-        if result.returncode != 0:
-            return jsonify({'error': 'Failed to get formats'}), 400
-
-        # Parse formats from output
-        formats = parse_formats_output(result.stdout)
-
-        return jsonify({'success': True, 'formats': formats})
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/folders', methods=['POST'])
-def list_folders():
-    """List folders in a directory for folder browser"""
-    try:
-        data = request.get_json()
-        path = data.get('path', '').strip()
-
-        # If no path provided, start from user's home directory
         if not path:
-            path = os.path.expanduser('~')
+            # Return drives/root directories
+            if os.name == 'nt':  # Windows
+                import string
+                drives = []
+                for letter in string.ascii_uppercase:
+                    drive_path = f"{letter}:\\"
+                    if os.path.exists(drive_path):
+                        try:
+                            usage = get_disk_usage(drive_path)
+                            drives.append({
+                                'name': f"{letter}: Drive",
+                                'path': drive_path,
+                                'type': 'drive',
+                                'size': format_file_size(usage['total']) if usage else 'Unknown',
+                                'free': format_file_size(usage['free']) if usage else 'Unknown'
+                            })
+                        except:
+                            drives.append({
+                                'name': f"{letter}: Drive",
+                                'path': drive_path,
+                                'type': 'drive',
+                                'size': 'Unknown',
+                                'free': 'Unknown'
+                            })
+                return jsonify({'success': True, 'items': drives, 'current_path': ''})
+            else:  # Unix-like
+                try:
+                    items = []
+                    for item in sorted(os.listdir('/')):
+                        item_path = os.path.join('/', item)
+                        if os.path.isdir(item_path):
+                            items.append({
+                                'name': item,
+                                'path': item_path,
+                                'type': 'folder'
+                            })
+                    return jsonify({'success': True, 'items': items, 'current_path': '/'})
+                except:
+                    return jsonify({'success': True, 'items': [], 'current_path': '/'})
 
-        # Convert to absolute path and normalize
-        path = os.path.abspath(path)
-
-        # Security check - ensure path exists and is a directory
+        # Browse specific path
         if not os.path.exists(path) or not os.path.isdir(path):
-            return jsonify({'error': 'Directory does not exist'}), 400
+            return jsonify({'error': 'Path does not exist or is not a directory'}), 400
 
-        folders = []
-        files = []
-
+        items = []
         try:
-            # Get directory contents
-            for item in os.listdir(path):
+            for item in sorted(os.listdir(path)):
                 item_path = os.path.join(path, item)
-
-                # Skip hidden files/folders on Windows and Unix
-                if item.startswith('.'):
-                    continue
-
                 if os.path.isdir(item_path):
-                    folders.append({
+                    items.append({
                         'name': item,
                         'path': item_path,
                         'type': 'folder'
                     })
-                else:
-                    files.append({
-                        'name': item,
-                        'path': item_path,
-                        'type': 'file'
-                    })
-
         except PermissionError:
-            return jsonify({'error': 'Permission denied to access this directory'}), 403
-
-        # Sort folders and files alphabetically
-        folders.sort(key=lambda x: x['name'].lower())
-        files.sort(key=lambda x: x['name'].lower())
-
-        # Get parent directory
-        parent_path = os.path.dirname(path) if path != os.path.dirname(path) else None
-
-        # Get common folders for quick access
-        common_folders = []
-        try:
-            home_dir = os.path.expanduser('~')
-            common_folders = [
-                {'name': 'Home', 'path': home_dir},
-                {'name': 'Desktop', 'path': os.path.join(home_dir, 'Desktop')},
-                {'name': 'Downloads', 'path': os.path.join(home_dir, 'Downloads')},
-                {'name': 'Documents', 'path': os.path.join(home_dir, 'Documents')},
-                {'name': 'Videos', 'path': os.path.join(home_dir, 'Videos')},
-            ]
-            # Filter out folders that don't exist
-            common_folders = [f for f in common_folders if os.path.exists(f['path'])]
-        except:
-            pass
+            return jsonify({'error': 'Permission denied'}), 403
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
 
         return jsonify({
             'success': True,
+            'items': items,
             'current_path': path,
-            'parent_path': parent_path,
-            'folders': folders,
-            'files': files[:10],  # Limit files shown for performance
-            'common_folders': common_folders
+            'parent_path': os.path.dirname(path) if path != os.path.dirname(path) else None
         })
 
     except Exception as e:
@@ -1101,131 +1216,234 @@ def create_folder():
     """Create a new folder"""
     try:
         data = request.get_json()
-        parent_path = data.get('parent_path', '').strip()
+        parent_path = data.get('parent_path', '')
         folder_name = data.get('folder_name', '').strip()
 
         if not parent_path or not folder_name:
             return jsonify({'error': 'Parent path and folder name are required'}), 400
 
         # Validate folder name
-        if not folder_name or '/' in folder_name or '\\' in folder_name or folder_name in ['.', '..']:
-            return jsonify({'error': 'Invalid folder name'}), 400
+        invalid_chars = '<>:"/\\|?*'
+        if any(char in folder_name for char in invalid_chars):
+            return jsonify({'error': 'Folder name contains invalid characters'}), 400
 
-        # Create the full path
         new_folder_path = os.path.join(parent_path, folder_name)
 
-        # Check if folder already exists
         if os.path.exists(new_folder_path):
             return jsonify({'error': 'Folder already exists'}), 400
 
-        # Create the folder
-        os.makedirs(new_folder_path, exist_ok=True)
+        try:
+            os.makedirs(new_folder_path, exist_ok=True)
+            return jsonify({
+                'success': True,
+                'folder_path': new_folder_path,
+                'message': f'Folder "{folder_name}" created successfully'
+            })
+        except PermissionError:
+            return jsonify({'error': 'Permission denied'}), 403
+        except Exception as e:
+            return jsonify({'error': f'Failed to create folder: {str(e)}'}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/validate-path', methods=['POST'])
+def validate_path():
+    """Validate if a path exists and is writable"""
+    try:
+        data = request.get_json()
+        path = data.get('path', '').strip()
+
+        if not path:
+            return jsonify({'error': 'Path is required'}), 400
+
+        # Check if path is absolute
+        if not os.path.isabs(path):
+            # Make it relative to parent directory
+            path = os.path.join('..', path)
+
+        # Check if path exists
+        path_exists = os.path.exists(path)
+        is_directory = os.path.isdir(path) if path_exists else False
+
+        # Try to create the directory if it doesn't exist
+        writable = False
+        if not path_exists:
+            try:
+                os.makedirs(path, exist_ok=True)
+                path_exists = True
+                is_directory = True
+                writable = True
+            except:
+                pass
+
+        # Test write permission
+        if path_exists and is_directory and not writable:
+            try:
+                test_file = os.path.join(path, 'test_write.tmp')
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                writable = True
+            except:
+                pass
+
+        # Get storage info
+        storage_info = None
+        if path_exists and is_directory:
+            try:
+                if os.name == 'nt':  # Windows
+                    drive = os.path.splitdrive(os.path.abspath(path))[0]
+                    if not drive:
+                        drive = 'C:'
+                else:  # Unix-like
+                    drive = '/'
+
+                usage = get_disk_usage(drive)
+                if usage:
+                    storage_info = {
+                        'total_space': usage['total'],
+                        'free_space': usage['free'],
+                        'used_space': usage['used'],
+                        'total_formatted': format_file_size(usage['total']),
+                        'free_formatted': format_file_size(usage['free']),
+                        'used_formatted': format_file_size(usage['used']),
+                        'usage_percent': usage['percent']
+                    }
+            except Exception as e:
+                print(f"Error getting storage info: {e}")
 
         return jsonify({
             'success': True,
-            'message': f'Folder "{folder_name}" created successfully',
-            'folder_path': new_folder_path
+            'path': path,
+            'exists': path_exists,
+            'is_directory': is_directory,
+            'writable': writable,
+            'storage_info': storage_info
         })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-def format_duration(seconds):
-    """Format duration in seconds to MM:SS or HH:MM:SS"""
-    if not seconds:
-        return "0:00"
-
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    seconds = seconds % 60
-
-    if hours > 0:
-        return f"{hours}:{minutes:02d}:{seconds:02d}"
-    else:
-        return f"{minutes}:{seconds:02d}"
-
-def format_number(num):
-    """Format large numbers with commas"""
-    if not num:
-        return "0"
-    return f"{num:,}"
-
-def format_date(date_str):
-    """Format upload date"""
-    if not date_str or len(date_str) < 8:
-        return "Unknown date"
-
+@app.route('/api/stream-download', methods=['POST'])
+def stream_download():
+    """Stream download for browser download"""
     try:
-        year = date_str[:4]
-        month = date_str[4:6]
-        day = date_str[6:8]
-        return f"{month}/{day}/{year}"
-    except:
-        return "Unknown date"
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        format_selector = data.get('format', 'best[height<=720]')
+        options = data.get('options', {})
 
-def extract_formats(formats):
-    """Extract and organize available formats"""
-    video_formats = []
-    audio_formats = []
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
 
-    for fmt in formats:
-        if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':
-            # Combined format
-            video_formats.append({
-                'format_id': fmt.get('format_id'),
-                'ext': fmt.get('ext'),
-                'resolution': fmt.get('resolution', 'unknown'),
-                'filesize': fmt.get('filesize', 0),
-                'type': 'video+audio'
+        # Get video info first
+        cmd = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--dump-json',
+            '--no-download',
+            '--format', format_selector,
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            '--extractor-retries', '3',
+            url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd='..')
+
+        if result.returncode != 0:
+            return jsonify({'error': 'Failed to get video information'}), 400
+
+        try:
+            video_info = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return jsonify({'error': 'Failed to parse video information'}), 400
+
+        # Get the direct video URL
+        video_url = video_info.get('url')
+        title = video_info.get('title', 'video')
+        ext = video_info.get('ext', 'mp4')
+
+        if not video_url:
+            return jsonify({'error': 'Could not get direct video URL'}), 400
+
+        # Clean title for filename
+        safe_title = re.sub(r'[<>:"/\\|?*]', '_', title)
+        filename = f"{safe_title}.{ext}"
+
+        return jsonify({
+            'success': True,
+            'download_url': video_url,
+            'filename': filename,
+            'title': title,
+            'size': video_info.get('filesize') or video_info.get('filesize_approx', 0)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stream-playlist-download', methods=['POST'])
+def stream_playlist_download():
+    """Stream playlist download for browser download"""
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        format_selector = data.get('format', 'best[height<=720]')
+        options = data.get('options', {})
+
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+
+        # Get playlist info first
+        playlist_cmd = [
+            sys.executable, '-m', 'yt_dlp',
+            '--no-check-certificate',
+            '--dump-json',
+            '--no-download',
+            '--flat-playlist',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            '--extractor-retries', '3',
+            url
+        ]
+
+        playlist_result = subprocess.run(playlist_cmd, capture_output=True, text=True, cwd='..')
+
+        if playlist_result.returncode != 0:
+            return jsonify({'error': 'Failed to get playlist information'}), 400
+
+        try:
+            lines = [line.strip() for line in playlist_result.stdout.strip().split('\n') if line.strip()]
+            video_count = len(lines)
+            
+            if video_count == 0:
+                return jsonify({'error': 'No videos found in playlist'}), 400
+
+            # Get playlist title
+            playlist_title = "playlist"
+            try:
+                first_entry = json.loads(lines[0]) if lines else {}
+                playlist_title = first_entry.get('playlist_title', 'playlist')
+            except:
+                pass
+
+            # Clean playlist name for filename
+            safe_title = re.sub(r'[<>:"/\\|?*]', '_', playlist_title)
+            
+            return jsonify({
+                'success': True,
+                'message': f'Playlist "{playlist_title}" contains {video_count} videos. Browser download is not recommended for playlists. Please use the server download option for better performance.',
+                'video_count': video_count,
+                'playlist_title': playlist_title,
+                'recommend_server_download': True
             })
-        elif fmt.get('vcodec') != 'none':
-            # Video only
-            video_formats.append({
-                'format_id': fmt.get('format_id'),
-                'ext': fmt.get('ext'),
-                'resolution': fmt.get('resolution', 'unknown'),
-                'filesize': fmt.get('filesize', 0),
-                'type': 'video'
-            })
-        elif fmt.get('acodec') != 'none':
-            # Audio only
-            audio_formats.append({
-                'format_id': fmt.get('format_id'),
-                'ext': fmt.get('ext'),
-                'abr': fmt.get('abr', 0),
-                'filesize': fmt.get('filesize', 0),
-                'type': 'audio'
-            })
 
-    return {
-        'video': video_formats[:10],  # Limit to top 10
-        'audio': audio_formats[:5]    # Limit to top 5
-    }
+        except Exception as e:
+            return jsonify({'error': f'Failed to parse playlist information: {str(e)}'}), 400
 
-def parse_formats_output(output):
-    """Parse yt-dlp formats output"""
-    # This is a simplified parser - in production you'd want more robust parsing
-    formats = []
-    lines = output.split('\n')
-
-    for line in lines:
-        if line.strip() and not line.startswith('[') and '│' in line:
-            parts = line.split('│')
-            if len(parts) >= 3:
-                format_info = parts[0].strip().split()
-                if len(format_info) >= 2:
-                    formats.append({
-                        'format_id': format_info[0],
-                        'ext': format_info[1],
-                        'description': line.strip()
-                    })
-
-    return formats
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    print("🚀 Starting YouTube Downloader Pro Server...")
-    print("📱 Open your browser and go to: http://localhost:5000")
-    print("🎬 Ready to download videos!")
-    print()
-
+    print("Starting YouTube Downloader Pro Server...")
+    print("Access the interface at: http://localhost:5000")
     app.run(debug=True, host='0.0.0.0', port=5000)
